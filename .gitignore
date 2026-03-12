@@ -1,0 +1,45 @@
+# Git ignore file for Cipher DSG project
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables (contains credentials)
+.env
+
+# Logs
+logs/
+*.log
+
+# Data files
+data/
+
+# Neo4j local data (if using desktop)
+neo4j-data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
