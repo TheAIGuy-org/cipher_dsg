@@ -29,7 +29,10 @@ import argparse
 import traceback
 
 from config.dossier_registry import DOSSIER_REGISTRY
-from parsers.dossier_parser import parse_dossier_v2
+from parsers.dossier_parser import parse_dossier
+from parsers.section_profiler import create_profiler
+from llm.azure_client import get_llm_client
+from embeddings.embedder import get_embedder
 from graph.neo4j_client import client
 from graph.neo4j_schema import build_schema, clear_all_data
 from graph.graph_loader import load_dossier
@@ -39,9 +42,9 @@ log = get_logger("main")
 
 
 def build_dsg(clear: bool = False) -> None:
-    """Full DSG build pipeline."""
+    """Full DSG build pipeline with Phase 1 semantic profiling."""
     log.info("=" * 70)
-    log.info("  CIPHER DSG BUILDER — LLM-Powered Dynamic System")
+    log.info("  CIPHER DSG BUILDER — LLM-Powered Dynamic System (Phase 1)")
     log.info("=" * 70)
 
     client.connect()
@@ -53,30 +56,38 @@ def build_dsg(clear: bool = False) -> None:
         # Step 2: Optionally clear existing data
         if clear:
             clear_all_data(client)
+        
+        # Step 3: Initialize Phase 1 components (semantic profiler)
+        log.info("\n🤖 Initializing Phase 1 components...")
+        llm = get_llm_client()
+        embedder = get_embedder()
+        profiler = create_profiler(llm=llm, embedder=embedder)
+        log.info("   ✓ Semantic profiler ready")
 
-        # Step 3: Process each dossier
+        # Step 4: Process each dossier
         for manifest in DOSSIER_REGISTRY:
             log.info(f"\n📄 Processing: {manifest.product_name}")
             log.info(f"   PDF: {manifest.pdf_filename}")
 
-            # Parse dossier with embeddings (no regex classification)
-            dossier = parse_dossier_v2(manifest.pdf_path, manifest)
+            # Parse dossier with Phase 1 semantic profiling
+            dossier = parse_dossier(manifest.pdf_path, manifest, profiler=profiler)
             
             if dossier:
-                # Load into Neo4j with full text templates + embeddings
+                # Load into Neo4j with full text templates + semantic profiles
                 load_dossier(dossier, client, skip_embeddings=False)
-                log.info(f"   ✅ Loaded {len(dossier.sections)} sections")
+                log.info(f"   ✅ Loaded {len(dossier.sections)} sections with semantic profiles")
             else:
                 log.warning(f"   ⚠️  Failed to parse {manifest.product_name}")
 
         log.info("\n" + "=" * 70)
-        log.info("✅ DSG BUILD COMPLETE")
+        log.info("✅ DSG BUILD COMPLETE (Phase 1)")
         log.info("=" * 70)
         log.info("System ready for:")
         log.info("  • Semantic section discovery (vector search)")
+        log.info("  • Situation-based matching (semantic profiles)")
         log.info("  • Template-based content generation (LLM)")
         log.info("  • Hierarchical placement decisions (graph + LLM)")
-        log.info("\nUse validate_system.py to test LLM capabilities.")
+        log.info("\nNext: Implement Phase 2 (DB change detection pipeline)")
 
     except Exception as e:
         log.error(f"Fatal error during DSG build: {e}")
@@ -87,17 +98,24 @@ def build_dsg(clear: bool = False) -> None:
 
 
 def parse_only() -> None:
-    """Parse all dossiers and print results without writing to Neo4j."""
+    """Parse all dossiers with semantic profiling and print results without writing to Neo4j."""
     log.info("=" * 70)
-    log.info("  PARSE-ONLY MODE — No Neo4j writes")
+    log.info("  PARSE-ONLY MODE (Phase 1) — No Neo4j writes")
     log.info("=" * 70)
+    
+    # Initialize Phase 1 components
+    log.info("\n🤖 Initializing Phase 1 components...")
+    llm = get_llm_client()
+    embedder = get_embedder()
+    profiler = create_profiler(llm=llm, embedder=embedder)
+    log.info("   ✓ Semantic profiler ready")
     
     for manifest in DOSSIER_REGISTRY:
         log.info(f"\n{'='*70}")
         log.info(f"  {manifest.product_name}")
         log.info(f"{'='*70}")
         
-        dossier = parse_dossier_v2(manifest.pdf_path, manifest)
+        dossier = parse_dossier(manifest.pdf_path, manifest, profiler=profiler)
         
         if dossier:
             log.info(f"  ✅ Parsed {len(dossier.sections)} sections")
@@ -106,12 +124,17 @@ def parse_only() -> None:
                     f"    {s.section_number:12s} {s.title[:50]:50s} "
                     f"[{s.content_format:10s}] "
                     f"text={len(s.full_text):4d} chars, "
-                    f"embedding={len(s.embedding):4d} dims"
+                    f"embedding={len(s.embedding):4d} dims, "
+                    f"concepts={len(s.domain_concepts)}"
                 )
+                if s.semantic_description:
+                    log.info(f"      Profile: {s.semantic_description[:80]}...")
+                if s.domain_concepts:
+                    log.info(f"      Concepts: {', '.join(s.domain_concepts)}")
         else:
             log.warning(f"  ⚠️  Failed to parse")
     
-    log.info("\n✅ Parse-only complete.")
+    log.info("\n✅ Parse-only complete (Phase 1).")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 
 from openai import AzureOpenAI, OpenAIError
+from pydantic import BaseModel
 from utils.logger import get_logger
 
 log = get_logger("llm.azure_client")
@@ -196,6 +197,84 @@ class AzureLLMClient:
             temperature=0.0,  # Deterministic for structured extraction
             response_format="json_object"
         )
+    
+    def ask_structured_pydantic(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[BaseModel],
+        temperature: float = 0.0,
+        max_tokens: int = 4000
+    ) -> BaseModel:
+        """
+        Ask LLM with Pydantic-validated structured output.
+        
+        Uses OpenAI's structured outputs API with JSON schema from Pydantic model.
+        Guarantees type-safe, validated responses that match the model.
+        
+        This is the PREFERRED method for Phase 1+ implementation - ensures
+        all LLM outputs are validated against Pydantic models.
+        
+        Args:
+            system_prompt: System context/role definition
+            user_prompt: User task/question
+            response_model: Pydantic model class for response validation
+            temperature: Sampling temperature (0 = deterministic)
+            max_tokens: Maximum response length
+        
+        Returns:
+            Validated instance of response_model
+        
+        Raises:
+            ValidationError: If LLM response doesn't match schema
+            OpenAIError: If API call fails after retries
+        """
+        if not self.enabled:
+            log.error("Azure OpenAI not configured - cannot call ask_structured_pydantic")
+            raise RuntimeError("Azure OpenAI not configured")
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        start_time = time.time()
+        
+        for attempt in range(self.max_retries):
+            try:
+                # Use OpenAI structured outputs with Pydantic model
+                # This automatically converts Pydantic to JSON schema
+                response = self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=messages,
+                    response_format=response_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                latency_ms = (time.time() - start_time) * 1000
+                
+                # Extract parsed model
+                parsed_output = response.choices[0].message.parsed
+                
+                log.debug(
+                    f"Structured LLM call successful: {response.usage.total_tokens} tokens, "
+                    f"{latency_ms:.0f}ms, model={response_model.__name__}"
+                )
+                
+                return parsed_output
+                
+            except OpenAIError as e:
+                log.warning(
+                    f"Structured LLM call failed (attempt {attempt + 1}/{self.max_retries}): {e}"
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (attempt + 1))
+                else:
+                    log.error(f"All retries exhausted for structured call: {e}")
+                    raise
+        
+        raise RuntimeError("Unexpected: retries exhausted without raising exception")
 
 
 # Singleton instance

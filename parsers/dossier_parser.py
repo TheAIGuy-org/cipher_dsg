@@ -24,11 +24,12 @@ This parser's job is SIMPLE:
 All intelligence happens in the LLM layer.
 """
 import re
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from dataclasses import replace
 
-from parsers.data_models import ParsedDossier, ParsedSection, PageContent, TableData
-from parsers.pdf_extractor import extract_pdf
+from parsers.data_models import ParsedDossier, ParsedSection, TableData
+from parsers.pdf_extractor import extract_pdf, PageContent
+from parsers.section_profiler import SectionProfiler
 from embeddings.embedder import get_embedder
 from utils.logger import get_logger
 
@@ -49,16 +50,16 @@ BULLET_RE = re.compile(r'^\s*[•\-\*]\s+', re.MULTILINE)
 
 # ── Main Parser ──────────────────────────────────────────────────────────────
 
-def parse_dossier(pdf_path, manifest) -> ParsedDossier:
+def parse_dossier(pdf_path, manifest, profiler: Optional[SectionProfiler] = None) -> ParsedDossier:
     """
-    Parse a dossier PDF into structured sections.
+    Parse a dossier PDF into structured sections with semantic metadata.
     
-    This is the SIMPLIFIED version - no complex classification logic.
-    Just extract structure and text, let LLM handle the rest.
+    Phase 1 Enhancement: Now includes semantic profiling using LLM.
     
     Args:
         pdf_path: Path to PDF file
         manifest: Dossier manifest with metadata
+        profiler: Optional SectionProfiler for semantic metadata generation
     
     Returns:
         ParsedDossier with sections containing:
@@ -66,6 +67,7 @@ def parse_dossier(pdf_path, manifest) -> ParsedDossier:
         - Full text (the template)
         - Format metadata
         - Embedding for semantic search
+        - Semantic profile (if profiler provided)
     """
     log.info(f"Parsing dossier: {manifest.product_name} ({manifest.product_code})")
     
@@ -84,13 +86,17 @@ def parse_dossier(pdf_path, manifest) -> ParsedDossier:
     embedder = get_embedder()
     log.debug(f"  Using embedder: {embedder.__class__.__name__} (dim={embedder.dimension})")
     
+    if profiler:
+        log.info("  Semantic profiling enabled (Phase 1)")
+    
     # Parse each section
     sections: List[ParsedSection] = []
     for span in section_spans:
         section = _parse_section(
             span=span,
             all_tables=all_tables,
-            embedder=embedder
+            embedder=embedder,
+            profiler=profiler
         )
         sections.append(section)
         log.debug(f"  ✓ Section {section.section_number}: '{section.title}' "
@@ -115,7 +121,7 @@ def _build_document(pages: List[PageContent]) -> Tuple[str, List[TableData]]:
     all_tables: List[TableData] = []
     
     for page in pages:
-        texts.append(page.text)
+        texts.append(page.raw_text)
         all_tables.extend(page.tables)
     
     full_text = "\n\n".join(texts)
@@ -126,7 +132,7 @@ def _find_section_spans(doc_text: str) -> List[Dict]:
     """
     Find all section boundaries in document.
     
-    Returns list of dicts with: number, title, start_pos, end_pos
+    Returns list of dicts with: number, title, start_pos, end_pos, text
     """
     matches = list(SECTION_HEADING_RE.finditer(doc_text))
     
@@ -140,11 +146,18 @@ def _find_section_spans(doc_text: str) -> List[Dict]:
         # End is either the next section start, or end of document
         end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(doc_text)
         
+        # Extract the section text (excluding the heading line)
+        section_text = doc_text[start_pos:end_pos]
+        # Remove the heading line (first line)
+        lines = section_text.split('\n')
+        section_content = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+        
         spans.append({
             'number': match.group('number'),
             'title': match.group('title').strip(),
             'start_pos': start_pos,
             'end_pos': end_pos,
+            'text': section_content.strip(),
         })
     
     return spans
@@ -153,13 +166,13 @@ def _find_section_spans(doc_text: str) -> List[Dict]:
 def _parse_section(
     span: Dict,
     all_tables: List[TableData],
-    embedder
+    embedder,
+    profiler: Optional[SectionProfiler] = None
 ) -> ParsedSection:
     """
     Parse one section span into a ParsedSection.
     
-    SIMPLIFIED: No situation profiling, no clause classification.
-    Just extract the essentials.
+    Phase 1: Now includes semantic profiling for situation-based matching.
     """
     section_number = span['number']
     title = span['title']
@@ -183,6 +196,34 @@ def _parse_section(
     embedding_text = f"{title}\n\n{full_text[:2000]}"
     embedding = embedder.embed(embedding_text)
     
+    # Phase 1: Generate semantic profile if profiler provided
+    semantic_description = ""
+    semantic_embedding = []
+    semantic_characteristics = {}
+    domain_concepts = []
+    
+    if profiler and full_text.strip():
+        try:
+            # Generate semantic profile (situation description)
+            semantic_profile = profiler.generate_semantic_profile(
+                section_title=title,
+                section_text=full_text
+            )
+            semantic_description = semantic_profile.situation_description
+            semantic_embedding = semantic_profile.situation_embedding
+            semantic_characteristics = semantic_profile.characteristics
+            
+            # Extract domain concepts
+            domain_concepts = profiler.extract_domain_concepts(
+                section_title=title,
+                section_text=full_text
+            )
+            
+            log.debug(f"    ✓ Profiled: {semantic_description[:60]}... | Concepts: {domain_concepts}")
+        except Exception as e:
+            log.warning(f"    Failed to profile section {section_number}: {e}")
+            # Continue without semantic profile if profiling fails
+    
     return ParsedSection(
         section_number=section_number,
         title=title,
@@ -193,20 +234,19 @@ def _parse_section(
         has_bullets=has_bullets,
         embedding=embedding,
         tables=section_tables,
+        semantic_description=semantic_description,
+        semantic_embedding=semantic_embedding,
+        semantic_characteristics=semantic_characteristics,
+        domain_concepts=domain_concepts,
     )
 
 
 def _extract_section_text(span: Dict, all_tables: List[TableData]) -> str:
     """
-    Extract the text for a section, removing the heading line.
+    Extract the text for a section from the span dict.
+    The span already contains the text with heading removed.
     """
-    # Get text from document span (this will be passed in from _find_section_spans somehow)
-    # For now, we'll need to pass the full doc text through
-    # Actually, let me refactor this differently
-    
-    # The span dict should contain the actual text
-    # Let me fix this in the calling code
-    pass
+    return span.get('text', '')
 
 
 def _get_parent_number(section_number: str) -> str:

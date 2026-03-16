@@ -76,6 +76,19 @@ OPTIONS {
 }
 """
 
+# Vector index on Section.semantic_embedding (for situation-based search)
+# This enables concept-level matching for DB change mapping
+VECTOR_INDEX_SEMANTIC = """
+CREATE VECTOR INDEX idx_semantic_embedding IF NOT EXISTS
+FOR (s:Section) ON s.semantic_embedding
+OPTIONS {
+  indexConfig: {
+    `vector.dimensions`: 1536,
+    `vector.similarity_function`: 'cosine'
+  }
+}
+"""
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MERGE QUERIES: Nodes
@@ -101,16 +114,20 @@ RETURN d.dossier_id AS id
 MERGE_SECTION = """
 MERGE (s:Section {section_id: $section_id})
 SET
-  s.section_number  = $section_number,
-  s.title           = $title,
-  s.parent_number   = $parent_number,
-  s.full_text       = $full_text,
-  s.content_format  = $content_format,
-  s.has_table       = $has_table,
-  s.has_bullets     = $has_bullets,
-  s.embedding       = $embedding,
-  s.product_code    = $product_code,
-  s.dossier_id      = $dossier_id
+  s.section_number           = $section_number,
+  s.title                    = $title,
+  s.parent_number            = $parent_number,
+  s.full_text                = $full_text,
+  s.content_format           = $content_format,
+  s.has_table                = $has_table,
+  s.has_bullets              = $has_bullets,
+  s.embedding                = $embedding,
+  s.product_code             = $product_code,
+  s.dossier_id               = $dossier_id,
+  s.semantic_description     = $semantic_description,
+  s.semantic_embedding       = $semantic_embedding,
+  s.semantic_characteristics = $semantic_characteristics,
+  s.domain_concepts          = $domain_concepts
 RETURN s.section_id AS id
 """
 
@@ -254,6 +271,7 @@ def build_schema(client: Neo4jClient) -> None:
     client.run_auto_commit(INDEX_SECTION_FULLTEXT)
     client.run_auto_commit(INDEX_SECTION_NUMBER)
     client.run_auto_commit(VECTOR_INDEX_SECTION)
+    client.run_auto_commit(VECTOR_INDEX_SEMANTIC)
     
     log.info("✅ Schema built successfully")
 

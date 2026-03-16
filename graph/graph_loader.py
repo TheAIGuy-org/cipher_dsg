@@ -23,6 +23,7 @@ This loader is SIMPLE - it just stores:
 
 No metadata extraction, no classification - all that moved to LLM layer!
 """
+import json
 from typing import List
 
 from parsers.data_models import ParsedDossier, ParsedSection
@@ -112,18 +113,26 @@ def _load_section(
     skip_embeddings: bool = False
 ) -> None:
     """
-    Create or update Section node with embedding.
+    Create or update Section node with embeddings and semantic profile.
     
-    This is where the magic happens - we store:
+    Phase 1 Enhancement: Now stores semantic metadata for situation-based matching.
+    
+    This stores:
     - Full text (the template for generation)
-    - Embedding (for semantic search)
+    - Content embedding (for content-based search)
+    - Semantic profile (for situation-based matching)
     - Format metadata (for choosing generation strategy)
     """
     section_id = _make_section_id(dossier.product_code, section.section_number)
     dossier_id = f"{dossier.product_code}_{dossier.version_code}"
     
-    # Prepare embedding (empty list if skipping)
+    # Prepare embeddings (empty list if skipping)
     embedding = section.embedding if not skip_embeddings else []
+    semantic_embedding = section.semantic_embedding if not skip_embeddings else []
+    
+    # Convert semantic_characteristics dict to JSON string for Neo4j
+    # (Neo4j doesn't accept nested dicts, only primitive types or arrays)
+    semantic_characteristics_json = json.dumps(section.semantic_characteristics) if section.semantic_characteristics else "{}"
     
     client.run_auto_commit(
         neo4j_schema.MERGE_SECTION,
@@ -139,6 +148,10 @@ def _load_section(
             "embedding": embedding,
             "product_code": dossier.product_code,
             "dossier_id": dossier_id,
+            "semantic_description": section.semantic_description,
+            "semantic_embedding": semantic_embedding,
+            "semantic_characteristics": semantic_characteristics_json,
+            "domain_concepts": section.domain_concepts,
         }
     )
     

@@ -16,7 +16,7 @@ This makes the system:
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 @dataclass
@@ -57,8 +57,14 @@ class ParsedSection:
     has_table: bool = False
     has_bullets: bool = False
     
-    # Semantic search
+    # Semantic search (content-based)
     embedding: List[float] = field(default_factory=list)
+    
+    # Phase 1: Semantic profiling (situation-based)
+    semantic_description: str = ""          # LLM-generated situation description
+    semantic_embedding: List[float] = field(default_factory=list)  # Embedding of situation
+    semantic_characteristics: Dict = field(default_factory=dict)   # Flexible characteristics
+    domain_concepts: List[str] = field(default_factory=list)       # Concepts addressed
     
     # Optional: preserve tables if needed for validation
     tables: List[TableData] = field(default_factory=list)
