@@ -218,83 +218,122 @@ class SectionMapper:
             List of SectionImpact objects
         """
         # Build comprehensive section list for LLM
+        # NO PREPROCESSING - let the LLM analyze everything intelligently
         section_descriptions = []
+        
         for s in all_sections:
-            # Get content preview (first 200 chars)
-            content_preview = (s.get('content') or '')[:200]
-            content_preview = content_preview.replace('\n', ' ')[:180] + "..." if len(content_preview) > 180 else content_preview
+            # Get FULL content - NO TRUNCATION, NO FILTERING!
+            # The LLM is smart enough to analyze everything
+            content_full = s.get('content') or 'No content yet'
             
             # Mark status for LLM awareness
             status_marker = ""
             if s.get('section_status') == 'suggested_new':
-                status_marker = " [NEW - exists in other products, not in this one]"
+                status_marker = " [CANDIDATE - exists in other products, not here]"
             elif s.get('section_status') == 'reference_only':
-                status_marker = " [REFERENCE ONLY - from another product]"
+                status_marker = " [REFERENCE - from another product]"
             
-            section_desc = f"""Section {s['section_number']}: {s['title']}{status_marker}
-  Content preview: {content_preview or 'No content yet'}
-  Domain concepts: {s.get('domain_concepts', [])}
-  Status: {s.get('section_status', 'existing')}"""
+            section_desc = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Section {s['section_number']}: {s['title']}{status_marker}
+
+FULL TEXT:
+{content_full}
+
+Domain: {s.get('domain_concepts', [])}
+Status: {s.get('section_status', 'existing')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
             
             section_descriptions.append(section_desc)
         
         sections_text = "\n\n".join(section_descriptions)
         
-        # Build comprehensive prompt
-        system_prompt = """You are an expert regulatory affairs scientist specializing in cosmetic dossiers.
+        # Build comprehensive prompt - COMPLETELY DYNAMIC
+        system_prompt = """You are an elite regulatory affairs AI with deep expertise in cosmetic product dossiers.
 
-Your task: Analyze a detected change and determine which dossier sections need updates.
+🧠 YOUR INTELLIGENCE:
+You can understand ANY dossier format, ANY regulatory framework, ANY language or structure. You analyze content semantically, not through patterns or rules.
 
-IMPORTANT: You will see three types of sections:
-1. **existing** - Sections that already exist in the target product
-2. **suggested_new** - Sections that exist in OTHER products but NOT in this one (consider creating them)
-3. **reference_only** - Sections from other products (for context only)
+🎯 YOUR TASK:
+A change has been detected. You must:
+1. READ and UNDERSTAND the full content of every section provided
+2. SEMANTICALLY ANALYZE which sections discuss related topics, substances, or data
+3. INTELLIGENTLY DECIDE what type of update is needed
+4. EXPLAIN your reasoning clearly
 
-Consider:
-1. **Direct Impact**: Which sections explicitly cover this topic?
-2. **Regulatory Impact**: Does this affect compliance statements or safety assessments?
-3. **Cascading Impact**: Do changes in one area require updates elsewhere for consistency?
-4. **NEW SECTION DETECTION**: If no existing section covers this concept, but a suggested_new section does, recommend creating that section!
-5. **Priority Assessment**:
-   - CRITICAL: Safety issues, legal compliance, prohibited substances
-   - HIGH: Regulatory statements, risk assessments, ingredient declarations
-   - MEDIUM: Standard formulation or process updates
-   - LOW: Minor clarifications or optional info
-6. **Update Type**:
-   - REPLACE: Complete section rewrite needed
-   - APPEND: Add new information to existing content
-   - MODIFY: Update specific parts of existing content
-   - REMOVE: Delete information (rare)
-   - CREATE: Create entirely new section (doesn't exist in this product yet)
+⚡ DECISION FRAMEWORK:
 
-Return structured analysis for EACH affected section with:
+**STEP 1: Content Analysis**
+- Read the FULL TEXT of each section carefully
+- Look for mentions of: substances, ingredients, concentrations, limits, classifications
+- Understand the semantic meaning, not just keyword matching
+- Example: If change mentions "Toluene 80→60 ppm", find where Toluene is discussed, even if phrased differently
+
+**STEP 2: Update Type Decision**
+- **modify**: Data/values that exist need updating (e.g., concentration change, limit adjustment)
+- **append**: Add new related information to existing relevant section
+- **replace**: Structural or fundamental content change (rare)
+- **remove**: Delete outdated information (very rare)
+
+**STEP 3: Minimize Disruption**
+- ALWAYS prefer modifying existing content over creating new sections
+- Creating new sections should be RARE - only when:
+  * Topic genuinely not covered anywhere in current dossier
+  * CANDIDATE sections exist in other products (marked [CANDIDATE])
+  * Regulatory requirement for separate section
+- For value updates (X → Y), concentration changes, limit adjustments: ALWAYS modify existing section
+
+**STEP 4: Priority Assessment**
+- CRITICAL: Safety, legal compliance, prohibited substances, recalls
+- HIGH: Regulatory declarations, risk assessments, major formulation changes
+- MEDIUM: Standard updates, minor reformulations
+- LOW: Clarifications, optional improvements
+
+🎨 ADAPTIVE INTELLIGENCE:
+- No assumptions about format - work with what you see
+- No keyword matching - use semantic understanding
+- No rigid rules - use context and domain expertise
+- Handle any dossier structure, any regulatory framework, any language style
+
+📊 OUTPUT FORMAT:
+For each affected section:
 - Section number and title
-- Priority level
-- Update type
-- Relevance score (0.0-1.0)
-- Clear rationale explaining WHY this section is affected"""
+- Priority: critical | high | medium | low
+- Update type: modify | append | replace | remove
+- Relevance score: 0.0 to 1.0 (how strongly this section relates to the change)
+- Rationale: Explain what you found in the content and why this update is needed"""
         
-        user_prompt = f"""**Change Detected:**
+        user_prompt = f"""═══════════════════════════════════════════════════════════════════════
+                              CHANGE DETECTED
+═══════════════════════════════════════════════════════════════════════
 
 Concept: {concept.concept}
 Change Type: {concept.change_type}
 Description: {concept.description}
+Affected Entity: {concept.affected_entity}
 Confidence: {concept.confidence}
 
-**Available Dossier Sections:**
+═══════════════════════════════════════════════════════════════════════
+                          AVAILABLE DOSSIER SECTIONS
+                          (Full Content Provided)
+═══════════════════════════════════════════════════════════════════════
 
 {sections_text}
 
-**Task:**
-Analyze this change and determine which sections need updates. For each affected section, provide:
-- Section number
-- Section title  
-- Priority (critical/high/medium/low)
-- Update type (replace/append/modify/remove)
-- Relevance score (0.0 to 1.0)
-- Rationale
+═══════════════════════════════════════════════════════════════════════
+                              YOUR ANALYSIS
+═══════════════════════════════════════════════════════════════════════
 
-Be thorough but selective - only include sections that genuinely need updates."""
+1. Read and understand each section's FULL TEXT
+2. Identify which sections semantically relate to this change
+3. For each affected section, determine:
+   - Does it ALREADY contain data that needs updating? → modify
+   - Does it discuss related topics where this fits? → append
+   - Or is this completely new content? → consider new section (rare)
+
+4. Be SELECTIVE - only return sections that genuinely need updates
+5. Prioritize MINIMAL DISRUPTION - modify existing content whenever possible
+
+Provide your analysis now."""
         
         try:
             # Call LLM with structured output

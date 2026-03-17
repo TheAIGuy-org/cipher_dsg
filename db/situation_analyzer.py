@@ -106,7 +106,13 @@ class SectionSituationAnalyzer:
         """
         log.debug(f"Analyzing section: {section.section_number} - {section.title}")
         
-        # Step 1: Infer new situation
+        # Step 1: Check section's current state and format
+        section_state = self._get_section_state(
+            section_id=section.section_id,
+            product_code=section.product_code
+        )
+        
+        # Step 2: Infer new situation
         new_situation = self._infer_new_situation(
             current_description=section.current_semantic_description,
             concept_changes=section.related_concept_changes
@@ -114,18 +120,12 @@ class SectionSituationAnalyzer:
         
         log.debug(f"  New situation inferred: {new_situation[:100]}...")
         
-        # Step 2: Get reference format evidence
-        reference_evidence = self._get_reference_format_evidence(
-            section_id=section.section_id,
-            product_code=section.product_code,
-            domain_concepts=section.current_domain_concepts
-        )
-        
-        # Step 3: Determine pattern change
-        pattern_decision = self._determine_pattern_change(
-            old_description=section.current_semantic_description,
+        # Step 3: Determine pattern based on FORMAT COMPATIBILITY, not content amount
+        pattern_decision = self._determine_pattern_from_format(
+            section_state=section_state,
+            current_description=section.current_semantic_description,
             new_description=new_situation,
-            reference_evidence=reference_evidence
+            domain_concepts=section.current_domain_concepts
         )
         
         log.debug(
@@ -143,7 +143,7 @@ class SectionSituationAnalyzer:
             'new_semantic_description': new_situation,
             'pattern_change_type': pattern_decision.pattern_change,
             'pattern_reasoning': pattern_decision.reasoning,
-            'confidence': 'high',  # Pattern decisions are evidence-based, not probabilistic
+            'confidence': 'high',
             'related_concept_changes': section.related_concept_changes
         }
     
@@ -191,6 +191,176 @@ Return JSON: {{"new_situation": "..."}}
         )
         
         return response.new_situation
+    
+    
+    def _get_section_state(self, section_id: str, product_code: str) -> Dict:
+        """
+        Get section's current state: existence, content amount, format.
+        
+        This is KEY to fixing the "empty section" bug.
+        
+        Returns:
+            {
+                'exists': bool,
+                'has_content': bool,  # True if >50 chars of content
+                'content_format': str,  # 'bullets', 'table', 'prose', etc.
+                'content_length': int,
+                'full_text_preview': str
+            }
+        """
+        try:
+            query = """
+            MATCH (s:Section {section_id: $section_id, product_code: $product_code})
+            RETURN s.full_text AS content,
+                   s.content_format AS format,
+                   size(s.full_text) AS length
+            """
+            
+            result = self.neo4j.run_query(
+                query,
+                {'section_id': section_id, 'product_code': product_code}
+            )
+            
+            if not result:
+                return {
+                    'exists': False,
+                    'has_content': False,
+                    'content_format': 'unknown',
+                    'content_length': 0,
+                    'full_text_preview': ''
+                }
+            
+            row = result[0]
+            content = row.get('content', '') or ''
+            content_length = row.get('length', 0) or 0
+            
+            return {
+                'exists': True,
+                'has_content': content_length > 50,  # Has meaningful content
+                'content_format': row.get('format') or 'unknown',
+                'content_length': content_length,
+                'full_text_preview': content[:200] if content else ''
+            }
+            
+        except Exception as e:
+            log.warning(f"Failed to get section state: {e}")
+            return {
+                'exists': False,
+                'has_content': False,
+                'content_format': 'unknown',
+                'content_length': 0,
+                'full_text_preview': ''
+            }
+    
+    def _determine_pattern_from_format(
+        self,
+        section_state: Dict,
+        current_description: str,
+        new_description: str,
+        domain_concepts: List[str]
+    ) -> PatternDecisionOutput:
+        """
+        NEW LOGIC: Decide based on FORMAT COMPATIBILITY, not content amount.
+        
+        Decision tree:
+        1. Section EXISTS + has canonical format → Check format compatibility
+        2. Section EXISTS but EMPTY → Get format from references, use SAME_PATTERN
+        3. Section format can handle new data → SAME_PATTERN
+        4. Format incompatible → NEW_PATTERN (rare)
+        
+        This fixes: "Empty section → NEW_PATTERN" bug
+        """
+        exists = section_state['exists']
+        has_content = section_state['has_content']
+        canonical_format = section_state['content_format']
+        
+        # Case 1: Section exists but empty/minimal → Populate with canonical format
+        if exists and not has_content:
+            log.info(f"  📝 Section exists but empty - will populate with canonical format")
+            return PatternDecisionOutput(
+                pattern_change="SAME_PATTERN",
+                reasoning=(
+                    f"Section exists with canonical format '{canonical_format}'. "
+                    f"Currently empty/minimal content. Will populate using existing format structure. "
+                    f"This is FIRST POPULATION, not format change."
+                ),
+                evidence_used=f"Section metadata: format={canonical_format}, empty=True"
+            )
+        
+        # Case 2: Section has content → Check if format can accommodate changes
+        if exists and has_content:
+            # Get reference evidence for similar sections
+            reference_evidence = self._get_reference_format_evidence(
+                section_id='',  # Not needed for reference query
+                product_code=section_state.get('product_code', ''),
+                domain_concepts=domain_concepts
+            )
+            
+            # Use LLM to assess format compatibility
+            system_prompt = f"""You are a document format analyst.
+
+Your task: Determine if a section's EXISTING FORMAT can accommodate new changes.
+
+Key principle: **SAME_PATTERN unless format is structurally incompatible**
+
+Format compatibility examples:
+✅ SAME_PATTERN:
+  - Bullet list + add 1 item → still bullet list
+  - Table + add 1 row → still table
+  - Prose paragraph + add 1 sentence → still prose
+
+❌ NEW_PATTERN (rare):
+  - Single sentence + add 20 items → needs structure (list/table)
+  - Bullet list + need multi-column data → needs table
+  
+Current format: {canonical_format}
+Content length: {section_state['content_length']} chars"""
+
+            user_prompt = f"""**Current section state:**
+Format: {canonical_format}
+Has content: {has_content}
+Content preview: {section_state['full_text_preview']}
+
+**Current situation:**
+{current_description}
+
+**After changes:**
+{new_description}
+
+**Reference formats from similar sections:**
+{reference_evidence}
+
+**Question:** Can the existing '{canonical_format}' format accommodate the new changes?
+
+Answer with:
+- pattern_change: "SAME_PATTERN" or "NEW_PATTERN"
+- reasoning: Why the format works or doesn't work
+- evidence_used: Which evidence informed your decision"""
+
+            try:
+                response = self.llm.ask_structured_pydantic(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_model=PatternDecisionOutput,
+                    temperature=0.1
+                )
+                return response
+            except Exception as e:
+                log.error(f"Pattern decision failed: {e}")
+                # Conservative fallback
+                return PatternDecisionOutput(
+                    pattern_change="SAME_PATTERN",
+                    reasoning=f"Defaulting to SAME_PATTERN (format={canonical_format}) due to error: {e}",
+                    evidence_used="Error fallback"
+                )
+        
+        # Case 3: Section doesn't exist (shouldn't happen in Phase 5)
+        log.warning("  ⚠️ Section doesn't exist - this shouldn't happen in situation analysis")
+        return PatternDecisionOutput(
+            pattern_change="SAME_PATTERN",
+            reasoning="Section state unknown - defaulting to SAME_PATTERN",
+            evidence_used="None - error case"
+        )
     
     def _get_reference_format_evidence(
         self,
@@ -260,54 +430,8 @@ Return JSON: {{"new_situation": "..."}}
             log.warning(f"Failed to get reference evidence: {e}")
             return "Reference query failed - proceeding without evidence"
     
-    def _determine_pattern_change(
-        self,
-        old_description: str,
-        new_description: str,
-        reference_evidence: str
-    ) -> PatternDecisionOutput:
-        """
-        Use LLM to determine if pattern changed.
-        EVIDENCE-BASED: LLM looks at actual reference formats, not confidence guessing.
-        
-        Args:
-            old_description: Current situation
-            new_description: New situation after changes
-            reference_evidence: Format evidence from other products
-        
-        Returns:
-            PatternDecisionOutput with decision and reasoning
-        """
-        # Get prompts from centralized store
-        system_prompt = get_prompt('pattern_analysis', 'system')
-        user_prompt_template = get_prompt('pattern_analysis', 'user')
-        
-        # Format user prompt
-        user_prompt = user_prompt_template.format(
-            old_situation_description=old_description,
-            new_situation_description=new_description,
-            reference_evidence=reference_evidence
-        )
-        
-        # Call LLM with structured output
-        try:
-            response = self.llm.ask_structured_pydantic(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_model=PatternDecisionOutput,
-                temperature=0.1  # Deterministic
-            )
-            
-            return response
-            
-        except Exception as e:
-            log.error(f"Pattern decision LLM call failed: {e}")
-            # Conservative fallback: assume SAME_PATTERN (less disruptive)
-            return PatternDecisionOutput(
-                pattern_change="SAME_PATTERN",
-                reasoning=f"Defaulting to SAME_PATTERN due to LLM error: {str(e)}",
-                evidence_used="None (error fallback)"
-            )
+    # Old method removed - replaced by _determine_pattern_from_format()
+    # which uses format compatibility instead of semantic comparison
 
 
 # Singleton

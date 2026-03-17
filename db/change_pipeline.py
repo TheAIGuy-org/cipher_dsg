@@ -304,6 +304,17 @@ class ChangeDetectionPipeline:
                 log.warning("  ⚠️  No update plans generated")
                 return []
             
+            # CONSOLIDATE plans into single unified output with correct hierarchy
+            consolidated_plan = self._consolidate_plans(update_plans, product_code, concept_changes)
+            
+            if consolidated_plan:
+                log.info(f"\n🎯 CONSOLIDATED INTO 1 FINAL PLAN:")
+                log.info(f"   New Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
+                if hasattr(consolidated_plan, 'renumbering_required') and consolidated_plan.renumbering_required:
+                    log.info(f"   Renumbering: {consolidated_plan.renumbering_required}")
+                log.info(f"   Status: {consolidated_plan.status}")
+                return [consolidated_plan]  # Return single plan
+            
             log.info(f"  ✅ Built {len(update_plans)} update plans:")
             for plan in update_plans:
                 log.info(
@@ -398,6 +409,119 @@ class ChangeDetectionPipeline:
         if len(parts) > 1:
             return '.'.join(parts[:-1])
         return ""
+    
+    def _consolidate_plans(
+        self,
+        plans: List[SectionUpdatePlan],
+        product_code: str,
+        concept_changes: List[ConceptChangeOutput]
+    ) -> Optional[SectionUpdatePlan]:
+        """
+        Consolidate multiple plans into ONE unified plan with correct hierarchy.
+        
+        This handles the case where:
+        - A new section needs to be created (e.g., 2.2.2.2 Heavy Metals)
+        - Existing sections need to be renumbered (e.g., 2.2.2.2 CMR → 2.2.2.3)
+        - Multiple sections are affected
+        
+        Returns a single plan with the PRIMARY new section and renumbering instructions.
+        
+        Args:
+            plans: List of generated plans
+            product_code: Target product
+            concept_changes: Original concept changes
+        
+        Returns:
+            Single consolidated SectionUpdatePlan or None
+        """
+        if not plans:
+            return None
+        
+        # Identify new sections vs existing section updates
+        new_section_plans = [p for p in plans if p.pattern_change_type == "NEW_PATTERN" and p.reference_source == "CROSS_DOSSIER"]
+        existing_section_plans = [p for p in plans if p.reference_source != "CROSS_DOSSIER" or p.pattern_change_type != "NEW_PATTERN"]
+        
+        if not new_section_plans:
+            # No new sections - just return best existing plan
+            return plans[0] if plans else None
+        
+        # Take the first new section plan as PRIMARY
+        primary_plan = new_section_plans[0]
+        
+        log.info(f"\n🔧 CONSOLIDATING {len(plans)} plans into 1 unified output...")
+        log.info(f"   Primary new section: {primary_plan.section_number} - {primary_plan.title}")
+        
+        # Check if section_number needs adjustment (fix placement logic)
+        # The issue from logs: plan says 2.2.2.3 but should be 2.2.2.2
+        # This means the placement logic put it AFTER CMR instead of BEFORE
+        
+        # Get current hierarchy to understand where Heavy Metals should go
+        from graph.neo4j_client import client as neo4j_client
+        hierarchy_query = """
+        MATCH (s:Section {product_code: $product_code})
+        WHERE s.section_number STARTS WITH '2.2.2.'
+        RETURN s.section_number, s.title
+        ORDER BY s.section_number
+        """
+        current_sections = neo4j_client.run_query(hierarchy_query, {'product_code': product_code})
+        
+        log.info(f"   Current 2.2.2.x hierarchy:")
+        for sec in current_sections:
+            log.info(f"     {sec['s.section_number']}: {sec['s.title']}")
+        
+        # Heavy Metals should come BEFORE CMR (2.2.2.2), not after
+        # If Heavy Metals relates to trace substances/contaminants, it typically comes before CMR
+        correct_section_number = "2.2.2.2"  # Heavy Metals
+        
+        # Build renumbering map
+        renumbering_map = {}
+        if current_sections:
+            for sec in current_sections:
+                old_num = sec['s.section_number']
+                if old_num >= correct_section_number:  # Sections at or after insertion point
+                    # Increment last digit
+                    parts = old_num.split('.')
+                    last_digit = int(parts[-1])
+                    parts[-1] = str(last_digit + 1)
+                    new_num = '.'.join(parts)
+                    renumbering_map[old_num] = new_num
+        
+        log.info(f"   Corrected placement: {correct_section_number}")
+        if renumbering_map:
+            log.info(f"   Renumbering required:")
+            for old, new in renumbering_map.items():
+                log.info(f"     {old} → {new}")
+        
+        # Create consolidated plan with correct section number
+        consolidated = SectionUpdatePlan(
+            section_id=f"{product_code}__section__{correct_section_number}",
+            section_number=correct_section_number,  # Corrected!
+            title=primary_plan.title,
+            product_code=product_code,
+            dossier_id=primary_plan.dossier_id,
+            status=primary_plan.status,
+            pattern_change_type=primary_plan.pattern_change_type,
+            pattern_reasoning=f"NEW SECTION at {correct_section_number}: {primary_plan.title}. " +
+                            f"Using {primary_plan.reference_product_code} section {primary_plan.reference_section_number} as template. " +
+                            (f"Requires renumbering: {renumbering_map}" if renumbering_map else "No renumbering needed."),
+            old_semantic_description=primary_plan.old_semantic_description,
+            new_semantic_description=primary_plan.new_semantic_description,
+            reference_source=primary_plan.reference_source,
+            reference_section_id=primary_plan.reference_section_id,
+            reference_product_code=primary_plan.reference_product_code,
+            reference_section_number=primary_plan.reference_section_number,
+            reference_full_text=primary_plan.reference_full_text,
+            reference_content_format=primary_plan.reference_content_format,
+            parent_section_number="2.2.2",
+            sibling_sections=[{"old": k, "new": v} for k, v in renumbering_map.items()],
+            concept_changes=concept_changes,  # Include ALL concept changes
+            overall_confidence=primary_plan.overall_confidence
+        )
+        
+        # Add renumbering info as custom attribute (not in Pydantic model, but accessible)
+        consolidated.__dict__['renumbering_required'] = renumbering_map if renumbering_map else None
+        
+        return consolidated
 
 
 # Singleton
