@@ -25,6 +25,9 @@ All intelligence happens in the LLM layer.
 """
 import re
 from typing import List, Tuple, Dict, Optional
+import os
+from openai import AzureOpenAI
+from dotenv import load_dotenv
 from dataclasses import replace
 
 from parsers.data_models import ParsedDossier, ParsedSection, TableData
@@ -34,6 +37,15 @@ from embeddings.embedder import get_embedder
 from utils.logger import get_logger
 
 log = get_logger(__name__)
+load_dotenv()
+
+_client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+)
+
+_model = os.getenv("AZURE_OPENAI_MODEL")
 
 
 # ── Patterns ─────────────────────────────────────────────────────────────────
@@ -256,19 +268,66 @@ def _get_parent_number(section_number: str) -> str:
         return ""  # Top-level section has no parent
     return '.'.join(parts[:-1])
 
+def _llm_detect_table(text: str) -> bool:
+    """
+    Detect if section contains a table using FULL text (no truncation)
+    """
+
+    # 🔥 CHANGED: full section text passed (no slicing)
+    prompt = f"""
+You are a strict classifier.
+
+Determine if the following section contains a table ANYWHERE
+(even if the table appears on the next page).
+
+Return ONLY:
+true
+or
+false
+
+Section:
+{text}
+"""
+
+    try:
+        response = _client.chat.completions.create(
+            model=_model,
+            messages=[
+                {"role": "system", "content": "You detect tables in documents."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=5
+        )
+
+        answer = response.choices[0].message.content.strip().lower()
+        return answer == "true"
+
+    except Exception as e:
+        log.warning(f"LLM table detection failed: {e}")
+        return False
+
 
 def _section_has_table(text: str, section_number: str, all_tables: List[TableData]) -> bool:
-    """Check if section contains a table."""
-    # Look for "Table" keyword in text
-    if re.search(r'\btable\b', text, re.IGNORECASE):
+    """
+    Hybrid detection (LLM first):
+    1. LLM detects table from FULL section
+    2. Fallback to pdfplumber-based section mapping
+    """
+
+    # 🔥 CHANGED: LLM is PRIMARY detector
+    if _llm_detect_table(text):
         return True
-    
-    # Or check if any tables match this section
-    for table in all_tables:
-        if section_number in table.caption:
-            return True
-    
-    return False
+
+    # 🔥 fallback to pdfplumber mapping
+    section_tables = _find_tables_for_section(
+        text=text,
+        title="",
+        section_number=section_number,
+        all_tables=all_tables
+    )
+
+    return len(section_tables) > 0
 
 
 def _find_tables_for_section(
@@ -279,36 +338,38 @@ def _find_tables_for_section(
 ) -> List[TableData]:
     """
     Find tables that belong to this section.
-    
-    SIMPLIFIED: Just use caption matching and keywords.
-    No complex bleeding prevention - that was the bug we're fixing!
+
+    CLEAN VERSION:
+    - No last-table hacks
+    - Only logical matching
     """
+
     matched_tables = []
-    
+
     text_lower = text.lower()
     title_lower = title.lower()
-    
+
     for table in all_tables:
         caption_lower = table.caption.lower()
-        
+
         # Match 1: Section number in caption
         if section_number in caption_lower:
             matched_tables.append(table)
             continue
-        
-        # Match 2: Title keywords in caption (at least 2 words overlap)
+
+        # Match 2: Title keyword overlap
         title_words = set(re.findall(r'\w+', title_lower))
         caption_words = set(re.findall(r'\w+', caption_lower))
-        overlap = title_words & caption_words
-        
-        if len(overlap) >= 2:
+
+        if len(title_words & caption_words) >= 2:
             matched_tables.append(table)
             continue
-        
-        # Match 3: Table referenced in section text
+
+        # Match 3: Explicit reference in section text
         if f"table {table.caption}" in text_lower:
             matched_tables.append(table)
-    
+            continue
+
     return matched_tables
 
 
