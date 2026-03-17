@@ -168,13 +168,17 @@ Generate section content that:
 4. Incorporates ALL the new changes with specific data (substance names, concentrations, classifications)
 5. Maintains regulatory compliance and precision
 
-CRITICAL:
-- Use the SAME format structure as the reference
-- Include SPECIFIC data from the changes (names, numbers, units)
-- Keep regulatory tone and vocabulary
-- If reference uses tables, generate table format
-- If reference uses bullets, generate bullets
-- Be precise with numbers and units"""
+CRITICAL - DATA vs FORMAT:
+- The reference section is from a DIFFERENT product - use it ONLY for format/style/vocabulary
+- DO NOT copy specific substance names, allergens, or data from the reference
+- ONLY include data explicitly mentioned in the "NEW CHANGES" section
+- If reference lists "Substance A, Substance B" but changes only add "Substance C" → output ONLY "Substance C"
+- Reference = template for HOW to write, NOT WHAT to write
+
+FORMAT RULES:
+- Use the SAME format structure as the reference (bullets, tables, prose)
+- Keep regulatory tone and vocabulary from reference
+- Be precise with numbers and units from changes"""
 
         user_prompt = f"""Reference Section from Product {plan.reference_product_code}:
 Section {plan.reference_section_number}: {plan.title}
