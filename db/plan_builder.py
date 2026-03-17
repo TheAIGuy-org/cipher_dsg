@@ -281,7 +281,10 @@ class UpdatePlanBuilder:
         
         descriptions = []
         for change in concept_changes:
-            desc += f"(confidence: {change.confidence})"
+            desc = f"- {change.change_type}: {change.description}"
+            if change.affected_entity:
+                desc += f" (affects: {change.affected_entity})"
+            desc += f" (confidence: {change.confidence})"
             descriptions.append(desc)
         
         return "\n".join(descriptions)

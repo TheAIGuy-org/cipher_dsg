@@ -116,7 +116,7 @@ class CrossDossierReferenceFinder:
         candidates = self._get_candidate_sections(
             target_product_code=target_product_code,
             concept=concept,
-            top_k=top_k * 3  # Get more candidates for better semantic ranking
+            top_k=top_k  # Get top_k candidates directly
         )
         
         if not candidates:
@@ -232,11 +232,10 @@ Output format:
 - format_match: (excellent/good/acceptable/poor)"""
 
         try:
-            selection = self.llm.ask(
+            selection = self.llm.ask_structured_pydantic(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                output_schema=ReferenceSelectionOutput,
-                operation="reference_selection"
+                response_model=ReferenceSelectionOutput
             )
             
             selected_idx = selection.selected_index
@@ -246,6 +245,8 @@ Output format:
                 selected_idx = 0
             
             selected = candidates[selected_idx]
+
+            print(f"LLM selected reference #{selected_idx + 1}: Product {selected['product_code']} Section {selected['section_number']}")
             
             log.info(                f"✅ LLM selected reference #{selected_idx + 1}: "
 
@@ -265,27 +266,36 @@ Output format:
         """
         Format candidates into readable text for LLM analysis.
         
+        Provides FULL content (no truncation) so LLM can evaluate:
+        - Format style (bullets, tables, prose)
+        - Completeness (multiple items vs single)
+        - Detail level (comprehensive vs basic)
+        - Best match for the specific change type
+        
         Args:
             candidates: List of candidate section dicts
         
         Returns:
-            Formatted candidates text
+            Formatted candidates text with FULL content
         """
         formatted = []
         for idx, candidate in enumerate(candidates):
-            content_preview = candidate.get('full_text', '')[:400]
-            if len(candidate.get('full_text', '')) > 400:
-                content_preview += "..."
+            # Provide FULL content - no truncation
+            # LLM needs complete format to judge appropriateness
+            full_content = candidate.get('full_text', '')
+            content_length = len(full_content)
             
             candidate_text = f"""
 [{idx}] Product: {candidate['product_code']} - {candidate.get('product_name', 'Unknown')}
     Section: {candidate['section_number']} - {candidate['title']}
     Format: {candidate.get('content_format', 'Unknown')}
+    Content Length: {content_length} chars
     Similarity Score: {candidate.get('similarity_score', 0):.3f}
     Semantic Description: {candidate.get('semantic_description', 'N/A')}
     Characteristics: {candidate.get('semantic_characteristics', 'N/A')}
-    Content Preview:
-{content_preview}
+    
+    FULL CONTENT:
+{full_content}
 """
             formatted.append(candidate_text)
         
@@ -295,7 +305,7 @@ Output format:
         self,
         target_product_code: str,
         concept: str,
-        top_k: int = 10
+        top_k: int = 3
     ) -> List[Dict]:
         """
         Query Neo4j for sections that address similar concept in OTHER products.
@@ -304,10 +314,10 @@ Output format:
         Args:
             target_product_code: Product to exclude
             concept: Concept to search for
-            top_k: Max candidates to return
+            top_k: Max candidates to return (default: 3)
         
         Returns:
-            List of candidate section dicts
+            List of candidate section dicts (up to top_k)
         """
         log.debug(f"Querying graph for sections with concept '{concept}'")
         

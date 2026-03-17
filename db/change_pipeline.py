@@ -304,18 +304,25 @@ class ChangeDetectionPipeline:
                 log.warning("  ⚠️  No update plans generated")
                 return []
             
-            # CONSOLIDATE plans into single unified output with correct hierarchy
-            consolidated_plan = self._consolidate_plans(update_plans, product_code, concept_changes)
+            # CONSOLIDATE only if we have NEW_PATTERN sections needing hierarchy placement
+            # Otherwise return individual plans for independent section updates
+            new_pattern_plans = [p for p in update_plans if p.pattern_change_type == "NEW_PATTERN"]
             
-            if consolidated_plan:
-                log.info(f"\n🎯 CONSOLIDATED INTO 1 FINAL PLAN:")
-                log.info(f"   New Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
-                if hasattr(consolidated_plan, 'renumbering_required') and consolidated_plan.renumbering_required:
-                    log.info(f"   Renumbering: {consolidated_plan.renumbering_required}")
-                log.info(f"   Status: {consolidated_plan.status}")
-                return [consolidated_plan]  # Return single plan
+            if len(new_pattern_plans) > 1:
+                # Multiple new sections - need consolidation for proper numbering
+                consolidated_plan = self._consolidate_plans(update_plans, product_code, concept_changes)
+                if consolidated_plan:
+                    log.info(f"\n🎯 CONSOLIDATED {len(new_pattern_plans)} NEW_PATTERN PLANS INTO 1:")
+                    log.info(f"   New Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
+                    if hasattr(consolidated_plan, '__dict__') and 'renumbering_required' in consolidated_plan.__dict__:
+                        renumbering = consolidated_plan.__dict__['renumbering_required']
+                        if renumbering:
+                            log.info(f"   Renumbering: {renumbering}")
+                    log.info(f"   Status: {consolidated_plan.status}")
+                    return [consolidated_plan]
             
-            log.info(f"  ✅ Built {len(update_plans)} update plans:")
+            # Return individual plans (no consolidation needed)
+            log.info(f"\n✅ Generated {len(update_plans)} independent update plans:")
             for plan in update_plans:
                 log.info(
                     f"     - {plan.section_number}: "
