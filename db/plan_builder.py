@@ -116,22 +116,46 @@ class UpdatePlanBuilder:
             plan_status = "READY_FOR_GENERATION"
             
         else:
-            # NEW_PATTERN: Find cross-dossier reference
+            # NEW_PATTERN: Find cross-dossier reference with LLM selection
             log.debug(f"  NEW_PATTERN: Searching for cross-dossier reference")
             
             # Extract primary concept from first concept change
             primary_concept = analysis['related_concept_changes'][0].concept
             
-            reference_info = self.reference_finder.find_reference_section(
+            # Step 1: Get top-K candidates from RAG
+            candidates = self.reference_finder.find_reference_section(
                 target_product_code=product_code,
                 concept=primary_concept,
                 new_situation_description=analysis['new_semantic_description']
             )
             
+            # Step 2: LLM selects best reference from candidates
+            if candidates:
+                # Get current section info for LLM context (if section exists)
+                target_section_info = self._get_section_state_for_selection(
+                    analysis['section_id']
+                )
+                
+                # Build change description for LLM
+                change_description = self._build_change_description(
+                    analysis['related_concept_changes']
+                )
+                
+                # LLM picks best reference
+                reference_info = self.reference_finder.select_best_reference_with_llm(
+                    candidates=candidates,
+                    concept=primary_concept,
+                    new_situation=analysis['new_semantic_description'],
+                    change_description=change_description,
+                    target_section_info=target_section_info
+                )
+            else:
+                reference_info = None
+            
             if not reference_info:
                 # No reference found - mark for manual input at validation
                 log.info(
-                    f"  No cross-dossier reference for {analysis['section_id']} - "
+                    f"  No suitable reference for {analysis['section_id']} - "
                     f"requires manual template at validation stage"
                 )
                 reference_info = {
@@ -197,6 +221,70 @@ class UpdatePlanBuilder:
             # Confidence
             overall_confidence=overall_confidence
         )
+    
+    def _get_section_state_for_selection(self, section_id: str) -> Optional[Dict]:
+        """
+        Get current section state info for LLM reference selection context.
+        
+        Provides LLM with info about target section (if exists):
+        - Section number/title
+        - Whether it has content or is empty
+        - Current format
+        
+        Args:
+            section_id: Section identifier
+        
+        Returns:
+            Section state dict or None if section doesn't exist
+        """
+        query = """
+        MATCH (s:Section {section_id: $section_id})
+        RETURN s.section_number AS section_number,
+               s.title AS title,
+               s.full_text AS full_text,
+               s.content_format AS content_format,
+               size(coalesce(s.full_text, '')) AS content_length
+        """
+        
+        try:
+            result = self.neo4j.run_query(query, {"section_id": section_id})
+            if result:
+                section = result[0]
+                return {
+                    'section_number': section['section_number'],
+                    'title': section['title'],
+                    'has_content': section['content_length'] > 50,  # Meaningful content
+                    'content_format': section['content_format'],
+                    'content_length': section['content_length']
+                }
+            else:
+                return None  # Section doesn't exist yet
+        except Exception as e:
+            log.error(f"Failed to get section state: {e}")
+            return None
+    
+    def _build_change_description(
+        self,
+        concept_changes: List[ConceptChangeOutput]
+    ) -> str:
+        """
+        Build human-readable change description for LLM.
+        
+        Args:
+            concept_changes: List of concept changes
+        
+        Returns:
+            Formatted change description
+        """
+        if not concept_changes:
+            return "No specific changes"
+        
+        descriptions = []
+        for change in concept_changes:
+            desc += f"(confidence: {change.confidence})"
+            descriptions.append(desc)
+        
+        return "\n".join(descriptions)
     
     def _get_current_section_reference(self, section_id: str) -> Dict:
         """

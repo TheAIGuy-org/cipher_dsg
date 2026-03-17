@@ -3,49 +3,77 @@ db/reference_finder.py
 ----------------------
 Phase 6: Cross-Dossier Reference Finder
 
-Finds best reference section from other dossiers when NEW_PATTERN detected.
-Uses structured graph filtering + semantic ranking.
+Finds TOP-K candidate references, then LLM selects best one.
 
-This is the key component for cross-dossier learning - enables the system
-to find templates from other products when creating new sections.
+INTELLIGENT SELECTION APPROACH:
+1. RAG: Get top-K=3 semantically similar sections
+2. LLM: Analyze all candidates and pick the best based on:
+   - Format appropriateness
+   - Content structure match
+   - Applicability to the change
+
+This is truly adaptive - not "section exists → use it" rigidity.
 """
 from typing import List, Dict, Optional
+from pydantic import BaseModel, Field
 from graph.neo4j_client import Neo4jClient, client as neo4j_singleton
 from embeddings.embedder import EmbedderProtocol, get_embedder
+from llm.azure_client import AzureLLMClient, get_llm_client
 from utils.logger import get_logger
 import numpy as np
 
 log = get_logger(__name__)
 
 
+class ReferenceSelectionOutput(BaseModel):
+    """LLM output for selecting best reference from candidates."""
+    selected_index: int = Field(
+        ...,
+        description="Index of selected reference (0-based)",
+        ge=0
+    )
+    reasoning: str = Field(
+        ...,
+        description="Why this reference is most appropriate",
+        min_length=50
+    )
+    format_match: str = Field(
+        ...,
+        description="How well the format matches the need",
+        pattern="^(excellent|good|acceptable|poor)$"
+    )
+
+
 class CrossDossierReferenceFinder:
     """
-    Finds best reference section from other dossiers when pattern changes.
-    Uses structured graph filtering + semantic ranking.
+    Finds and intelligently selects best reference section from other dossiers.
     
-    Workflow:
-    1. Graph filter: Find sections with similar concept in other products
-    2. Semantic rank: Compare new situation embedding to candidate profiles
-    3. Return top-1 reference (or None if no suitable reference exists)
+    NEW APPROACH:
+    1. RAG: Get top-K candidates by semantic similarity
+    2. LLM: Analyze all candidates and select most appropriate
+    3. Return: Best reference for content generation
     
-    NOTE: Returning None is NOT an error - means no existing reference.
-    Pipeline will mark plan as PENDING_MANUAL_TEMPLATE.
+    This removes rigid "section exists → use it" logic in favor of
+    intelligent selection from multiple options.
     """
     
     def __init__(
         self,
         neo4j_client: Optional[Neo4jClient] = None,
-        embedder: Optional[EmbedderProtocol] = None
+        embedder: Optional[EmbedderProtocol] = None,
+        llm: Optional[AzureLLMClient] = None
     ):
         """
-        Initialize reference finder.
+        Initialize reference finder with LLM selector.
         
         Args:
             neo4j_client: Neo4j client for graph queries
             embedder: Embedder for semantic comparison
+            llm: LLM for intelligent reference selection
         """
         self.neo4j = neo4j_client or neo4j_singleton
         self.embedder = embedder or get_embedder()
+        self.llm = llm or get_llm_client()
         
         log.info("CrossDossierReferenceFinder initialized")
     
@@ -54,24 +82,30 @@ class CrossDossierReferenceFinder:
         target_product_code: str,
         concept: str,
         new_situation_description: str,
-        top_k: int = 5
-    ) -> Optional[Dict]:
+        top_k: int = 3  # Return top 3 for LLM selection
+    ) -> List[Dict]:
         """
-        Find best reference section across all other dossiers.
+        Find TOP-K candidate reference sections for LLM-based selection.
+        
+        NEW APPROACH: Instead of picking best match here, return top-K candidates.
+        Let the LLM analyze and select the most appropriate one based on:
+        - Semantic similarity to change
+        - Format appropriateness
+        - Content structure match
         
         Steps:
-        1. Graph filter: Find sections with similar concept in other products
-        2. Semantic rank: Compare new_situation to candidate profiles
-        3. Return top-1 reference (or None if no suitable reference exists)
+        1. Graph filter: Find sections with similar concept
+        2. Semantic rank: Get top-K by similarity
+        3. Return all K candidates for LLM selection
         
         Args:
-            target_product_code: Product code to EXCLUDE (don't search own product)
+            target_product_code: Product code to EXCLUDE
             concept: Regulatory concept to search for
-            new_situation_description: Inferred new situation after changes
-            top_k: Number of candidates to consider before ranking
+            new_situation_description: Inferred new situation
+            top_k: Number of candidates to return (default: 3)
         
         Returns:
-            Best reference section dict or None if no reference found
+            List of top-K reference section dicts (or empty if none found)
         """
         log.info(
             f"Finding reference for concept '{concept}' "
@@ -82,34 +116,180 @@ class CrossDossierReferenceFinder:
         candidates = self._get_candidate_sections(
             target_product_code=target_product_code,
             concept=concept,
-            top_k=top_k
+            top_k=top_k * 3  # Get more candidates for better semantic ranking
         )
         
         if not candidates:
-            log.info(
-                f"No candidate sections found for concept '{concept}' - "
-                f"will require manual template"
-            )
-            return None  # Not an error - just no reference available
+            log.info(f"No candidate sections found for concept '{concept}'")
+            return []  # Empty list - LLM will handle "no reference" case
         
         log.info(f"Found {len(candidates)} candidate sections")
         
-        # Step 2: Semantic ranking - compare to new situation
+        # Step 2: Semantic ranking
         ranked = self._rank_by_semantic_similarity(
             new_situation_description=new_situation_description,
             candidates=candidates
         )
         
-        if ranked:
-            best_match = ranked[0]
-            log.info(
-                f"Best reference: Product {best_match['product_code']} "
-                f"Section {best_match['section_number']} "
-                f"(similarity: {best_match['similarity_score']:.3f})"
-            )
-            return best_match
+        # Return top-K for LLM selection
+        top_candidates = ranked[:top_k]
         
-        return None
+        log.info(f"Returning top {len(top_candidates)} candidates for LLM selection:")
+        for idx, candidate in enumerate(top_candidates, 1):
+            log.info(
+                f"  {idx}. Product {candidate['product_code']} "
+                f"Section {candidate['section_number']} "
+                f"(similarity: {candidate['similarity_score']:.3f})"
+            )
+        
+        return top_candidates
+    
+    def select_best_reference_with_llm(
+        self,
+        candidates: List[Dict],
+        concept: str,
+        new_situation: str,
+        change_description: str,
+        target_section_info: Optional[Dict] = None
+    ) -> Optional[Dict]:
+        """
+        Use LLM to intelligently select best reference from K candidates.
+        
+        TRULY INTELLIGENT SELECTION:
+        - Not just "highest similarity" (that's already done by RAG)
+        - LLM considers: format appropriateness, content structure, applicability
+        - Can reject ALL candidates if none are suitable
+        
+        Args:
+            candidates: Top-K candidates from RAG (already ranked by similarity)
+            concept: Regulatory concept being addressed
+            new_situation: Description of what needs to be added/changed
+            change_description: Human description of the compliance change
+            target_section_info: Optional info about target section (if exists)
+        
+        Returns:
+            Best reference dict or None if no suitable reference
+        """
+        if not candidates:
+            log.info("No candidates provided - returning None")
+            return None
+        
+        if len(candidates) == 1:
+            log.info(f"Only one candidate - auto-selecting: {candidates[0]['section_number']}")
+            return candidates[0]
+        
+        log.info(f"LLM selecting best from {len(candidates)} candidates...")
+        
+        # Build candidate descriptions for LLM
+        candidates_text = self._format_candidates_for_llm(candidates)
+        
+        # Build target section context
+        target_context = ""
+        if target_section_info:
+            target_context = f"""
+TARGET SECTION CONTEXT:
+- Section: {target_section_info.get('section_number', 'Unknown')}
+- Title: {target_section_info.get('title', 'Unknown')}
+- Current Content: {'Empty' if not target_section_info.get('has_content') else 'Has content'}
+- Current Format: {target_section_info.get('content_format', 'Unknown')}
+"""
+        
+        system_prompt = """You are an expert regulatory reference selector.
+
+Your task: Analyze candidate reference sections and select the MOST APPROPRIATE one for generating new content.
+
+Consider:
+1. FORMAT APPROPRIATENESS: Does the format suit the new data?
+   - Bullet list good for multiple items
+   - Table good for structured comparisons
+   - Paragraph good for narrative explanations
+
+2. CONTENT STRUCTURE: Does the section structure align with new needs?
+   - Similar level of detail
+   - Similar regulatory scope
+   - Similar data organization
+
+3. APPLICABILITY: Will this reference help generate correct content?
+   - Not just "similar concept" - must be practically useful
+   - Format should match what's needed for new data
+
+You can analyze all candidates but MUST select exactly ONE (0-based index).
+Your reasoning should focus on WHY this reference is most appropriate for generating new content."""
+
+        user_prompt = f"""CHANGE REQUIREMENTS:
+Concept: {concept}
+New Situation: {new_situation}
+Change Description: {change_description}
+{target_context}
+
+CANDIDATE REFERENCES:
+{candidates_text}
+
+Analyze all candidates and select the BEST reference for generating content.
+Output format:
+- selected_index: (0-based index of best candidate)
+- reasoning: (detailed explanation of why this is most appropriate)
+- format_match: (excellent/good/acceptable/poor)"""
+
+        try:
+            selection = self.llm.ask(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                output_schema=ReferenceSelectionOutput,
+                operation="reference_selection"
+            )
+            
+            selected_idx = selection.selected_index
+            if selected_idx < 0 or selected_idx >= len(candidates):
+                log.error(f"Invalid selection index: {selected_idx} (candidates: {len(candidates)})")
+                # Fallback to first candidate
+                selected_idx = 0
+            
+            selected = candidates[selected_idx]
+            
+            log.info(                f"✅ LLM selected reference #{selected_idx + 1}: "
+
+                f"Product {selected['product_code']} Section {selected['section_number']}"
+            )
+            log.info(f"   Reasoning: {selection.reasoning}")
+            log.info(f"   Format match: {selection.format_match}")
+            
+            return selected
+            
+        except Exception as e:
+            log.error(f"LLM selection failed: {e}")
+            log.info("Fallback: Using first candidate")
+            return candidates[0]
+    
+    def _format_candidates_for_llm(self, candidates: List[Dict]) -> str:
+        """
+        Format candidates into readable text for LLM analysis.
+        
+        Args:
+            candidates: List of candidate section dicts
+        
+        Returns:
+            Formatted candidates text
+        """
+        formatted = []
+        for idx, candidate in enumerate(candidates):
+            content_preview = candidate.get('full_text', '')[:400]
+            if len(candidate.get('full_text', '')) > 400:
+                content_preview += "..."
+            
+            candidate_text = f"""
+[{idx}] Product: {candidate['product_code']} - {candidate.get('product_name', 'Unknown')}
+    Section: {candidate['section_number']} - {candidate['title']}
+    Format: {candidate.get('content_format', 'Unknown')}
+    Similarity Score: {candidate.get('similarity_score', 0):.3f}
+    Semantic Description: {candidate.get('semantic_description', 'N/A')}
+    Characteristics: {candidate.get('semantic_characteristics', 'N/A')}
+    Content Preview:
+{content_preview}
+"""
+            formatted.append(candidate_text)
+        
+        return "\n".join(formatted)
     
     def _get_candidate_sections(
         self,
