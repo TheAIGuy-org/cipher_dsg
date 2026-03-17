@@ -13,7 +13,7 @@ from parsers.models import ChangeBundle, SectionUpdatePlan, ImpactedSection, Con
 from db.sql_client import SQLServerClient, get_sql_client
 from llm.change_interpreter import ChangeInterpreter, get_change_interpreter
 from llm.section_mapper import SectionMapper, get_section_mapper
-from llm.section_intelligence import SectionIntelligence, SectionReference
+from llm.section_intelligence import SectionIntelligence, SectionReference, SectionPlacement
 from graph.neo4j_client import Neo4jClient, client as neo4j_singleton
 from db.situation_analyzer import SectionSituationAnalyzer, get_situation_analyzer
 from db.reference_finder import CrossDossierReferenceFinder, get_reference_finder
@@ -185,23 +185,37 @@ class ChangeDetectionPipeline:
                     # CRITICAL: Don't blindly use reference section number!
                     # Need to determine WHERE this section fits in target product's hierarchy
                     
-                    # Step 1: Find reference section for content/format template
-                    reference_info = self.reference_finder.find_reference_section(
+                    # Step 1: Find candidate reference sections
+                    reference_candidates = self.reference_finder.find_reference_section(
                         target_product_code=product_code,
                         concept=new_sec['concept'].concept,
                         new_situation_description=new_sec['concept'].description
                     )
                     
+                    if reference_candidates:
+                        # Step 1b: Use LLM to select the best reference from candidates
+                        change_description = self.plan_builder._build_change_description([new_sec['concept']])
+                        reference_info = self.reference_finder.select_best_reference_with_llm(
+                            candidates=reference_candidates,
+                            concept=new_sec['concept'].concept,
+                            new_situation=new_sec['concept'].description,
+                            change_description=change_description,
+                            target_section_info=None
+                        )
+                    else:
+                        reference_info = None
+                    
                     if reference_info:
                         log.info(f"    ✅ Found reference: {reference_info['product_code']} Section {reference_info['section_number']}")
                         
                         # Step 2: Determine correct section number for TARGET product's hierarchy
-                        target_section_number = self._determine_section_placement(
+                        placement = self._determine_section_placement(
                             target_product_code=product_code,
                             reference_section_number=reference_info['section_number'],
                             reference_title=reference_info['title'],
                             concept=new_sec['concept']
                         )
+                        target_section_number = placement.new_section_number
                         
                         log.info(f"    📍 Placement: Section {target_section_number} in {product_code}'s hierarchy")
                         
@@ -222,8 +236,8 @@ class ChangeDetectionPipeline:
                             reference_section_number=reference_info.get('section_number'),
                             reference_full_text=reference_info.get('full_text', ''),
                             reference_content_format=reference_info.get('content_format', 'paragraphs'),
-                            parent_section_number=self._get_parent_number(target_section_number),
-                            sibling_sections=[],
+                            parent_section_number=placement.parent_number,
+                            sibling_sections=[{"old": k, "new": v} for k, v in placement.renumber_plan.items()] if placement.renumber_plan else [],
                             concept_changes=[new_sec['concept']],
                             overall_confidence="high"
                         )
@@ -304,24 +318,31 @@ class ChangeDetectionPipeline:
                 log.warning("  ⚠️  No update plans generated")
                 return []
             
-            # CONSOLIDATE only if we have NEW_PATTERN sections needing hierarchy placement
-            # Otherwise return individual plans for independent section updates
+            # CONSOLIDATE if we have NEW_PATTERN sections needing hierarchy placement
+            # Even a SINGLE new section may need renumbering of existing sections
             new_pattern_plans = [p for p in update_plans if p.pattern_change_type == "NEW_PATTERN"]
             
-            if len(new_pattern_plans) > 1:
-                # Multiple new sections - need consolidation for proper numbering
+            if len(new_pattern_plans) >= 1:
+                # New section(s) detected - need to check if hierarchy placement required
                 consolidated_plan = self._consolidate_plans(update_plans, product_code, concept_changes)
+                
                 if consolidated_plan:
-                    log.info(f"\n🎯 CONSOLIDATED {len(new_pattern_plans)} NEW_PATTERN PLANS INTO 1:")
-                    log.info(f"   New Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
+                    log.info(f"\n🎯 CONSOLIDATED INTO PLAN WITH HIERARCHY PLACEMENT:")
+                    log.info(f"   Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
                     if hasattr(consolidated_plan, '__dict__') and 'renumbering_required' in consolidated_plan.__dict__:
                         renumbering = consolidated_plan.__dict__['renumbering_required']
                         if renumbering:
                             log.info(f"   Renumbering: {renumbering}")
                     log.info(f"   Status: {consolidated_plan.status}")
-                    return [consolidated_plan]
+                    
+                    # Return both consolidated new section AND any SAME_PATTERN updates
+                    result_plans = [consolidated_plan]
+                    same_pattern_plans = [p for p in update_plans if p.pattern_change_type == "SAME_PATTERN"]
+                    result_plans.extend(same_pattern_plans)
+                    
+                    return result_plans
             
-            # Return individual plans (no consolidation needed)
+            # Return individual plans (no new sections needing hierarchy placement)
             log.info(f"\n✅ Generated {len(update_plans)} independent update plans:")
             for plan in update_plans:
                 log.info(
@@ -358,7 +379,7 @@ class ChangeDetectionPipeline:
         reference_section_number: str,
         reference_title: str,
         concept: 'ConceptChangeOutput'
-    ) -> str:
+    ) -> SectionPlacement:
         """
         Determine WHERE in the target product's hierarchy this new section should go.
         
@@ -405,7 +426,7 @@ class ChangeDetectionPipeline:
         if placement.renumber_plan:
             log.warning(f"   ⚠️ Requires renumbering: {placement.renumber_plan}")
         
-        return placement.new_section_number
+        return placement
     
     def _get_parent_number(self, section_number: str) -> str:
         """
@@ -444,9 +465,12 @@ class ChangeDetectionPipeline:
         if not plans:
             return None
         
-        # Identify new sections vs existing section updates
-        new_section_plans = [p for p in plans if p.pattern_change_type == "NEW_PATTERN" and p.reference_source == "CROSS_DOSSIER"]
-        existing_section_plans = [p for p in plans if p.reference_source != "CROSS_DOSSIER" or p.pattern_change_type != "NEW_PATTERN"]
+        # Identify new sections (completely new, not just new format)
+        new_section_plans = [
+            p for p in plans 
+            if p.pattern_change_type == "NEW_PATTERN" 
+            and "does not exist yet" in str(p.old_semantic_description)
+        ]
         
         if not new_section_plans:
             # No new sections - just return best existing plan
@@ -458,57 +482,27 @@ class ChangeDetectionPipeline:
         log.info(f"\n🔧 CONSOLIDATING {len(plans)} plans into 1 unified output...")
         log.info(f"   Primary new section: {primary_plan.section_number} - {primary_plan.title}")
         
-        # Check if section_number needs adjustment (fix placement logic)
-        # The issue from logs: plan says 2.2.2.3 but should be 2.2.2.2
-        # This means the placement logic put it AFTER CMR instead of BEFORE
-        
-        # Get current hierarchy to understand where Heavy Metals should go
-        from graph.neo4j_client import client as neo4j_client
-        hierarchy_query = """
-        MATCH (s:Section {product_code: $product_code})
-        WHERE s.section_number STARTS WITH '2.2.2.'
-        RETURN s.section_number, s.title
-        ORDER BY s.section_number
-        """
-        current_sections = neo4j_client.run_query(hierarchy_query, {'product_code': product_code})
-        
-        log.info(f"   Current 2.2.2.x hierarchy:")
-        for sec in current_sections:
-            log.info(f"     {sec['s.section_number']}: {sec['s.title']}")
-        
-        # Heavy Metals should come BEFORE CMR (2.2.2.2), not after
-        # If Heavy Metals relates to trace substances/contaminants, it typically comes before CMR
-        correct_section_number = "2.2.2.2"  # Heavy Metals
-        
-        # Build renumbering map
+        # Trust the LLM's dynamic placement logic entirely - no hardcoded rules
         renumbering_map = {}
-        if current_sections:
-            for sec in current_sections:
-                old_num = sec['s.section_number']
-                if old_num >= correct_section_number:  # Sections at or after insertion point
-                    # Increment last digit
-                    parts = old_num.split('.')
-                    last_digit = int(parts[-1])
-                    parts[-1] = str(last_digit + 1)
-                    new_num = '.'.join(parts)
-                    renumbering_map[old_num] = new_num
+        if hasattr(primary_plan, 'sibling_sections') and isinstance(primary_plan.sibling_sections, list):
+            # Only extract dicts that have 'old' and 'new' keys (from placement logic)
+            renumbering_map = {sib['old']: sib['new'] for sib in primary_plan.sibling_sections if isinstance(sib, dict) and 'old' in sib and 'new' in sib}
         
-        log.info(f"   Corrected placement: {correct_section_number}")
         if renumbering_map:
-            log.info(f"   Renumbering required:")
+            log.info(f"   Renumbering required (decided by LLM):")
             for old, new in renumbering_map.items():
                 log.info(f"     {old} → {new}")
         
-        # Create consolidated plan with correct section number
+        # Create consolidated plan based entirely on primary_plan logic
         consolidated = SectionUpdatePlan(
-            section_id=f"{product_code}__section__{correct_section_number}",
-            section_number=correct_section_number,  # Corrected!
+            section_id=primary_plan.section_id,
+            section_number=primary_plan.section_number,
             title=primary_plan.title,
             product_code=product_code,
             dossier_id=primary_plan.dossier_id,
             status=primary_plan.status,
             pattern_change_type=primary_plan.pattern_change_type,
-            pattern_reasoning=f"NEW SECTION at {correct_section_number}: {primary_plan.title}. " +
+            pattern_reasoning=f"NEW SECTION at {primary_plan.section_number}: {primary_plan.title}. " +
                             f"Using {primary_plan.reference_product_code} section {primary_plan.reference_section_number} as template. " +
                             (f"Requires renumbering: {renumbering_map}" if renumbering_map else "No renumbering needed."),
             old_semantic_description=primary_plan.old_semantic_description,
@@ -519,8 +513,8 @@ class ChangeDetectionPipeline:
             reference_section_number=primary_plan.reference_section_number,
             reference_full_text=primary_plan.reference_full_text,
             reference_content_format=primary_plan.reference_content_format,
-            parent_section_number="2.2.2",
-            sibling_sections=[{"old": k, "new": v} for k, v in renumbering_map.items()],
+            parent_section_number=primary_plan.parent_section_number,
+            sibling_sections=primary_plan.sibling_sections,
             concept_changes=concept_changes,  # Include ALL concept changes
             overall_confidence=primary_plan.overall_confidence
         )

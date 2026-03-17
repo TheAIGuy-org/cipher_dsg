@@ -3,18 +3,6 @@ graph/simple_loader.py
 -----------------------
 SIMPLIFIED dossier loader for LLM-powered system.
 
-REMOVED (200+ lines):
-- _load_situation() - no SituationProfile node
-- _load_clauses() - no TextClause nodes
-- _load_db_table_edges() - no DatabaseTable mapping
-- _make_situation_id() - no situation hashing
-
-KEPT (100 lines):
-- _load_product()
-- _load_dossier_version()
-- _load_section() - now includes embedding
-- _load_parent_edges() - hierarchical relationships
-
 This loader is SIMPLE - it just stores:
 1. Product metadata
 2. Dossier version info

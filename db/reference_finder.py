@@ -194,42 +194,38 @@ TARGET SECTION CONTEXT:
 - Current Format: {target_section_info.get('content_format', 'Unknown')}
 """
         
-        system_prompt = """You are an expert regulatory reference selector.
+        system_prompt = """You are an expert regulatory document format and structure analyst. Your task is to select the most optimal template/reference from a list of candidates to format new regulatory data.
 
-Your task: Analyze candidate reference sections and select the MOST APPROPRIATE one for generating new content.
+Your goal is strictly to identify the best structural and stylistic template for the new data. Do not focus purely on semantic meaning, but focus primarily on whether the candidate's layout, tables, bullet points, or prose style can seamlessly accommodate the shape and volume of the new data requirements.
 
-Consider:
-1. FORMAT APPROPRIATENESS: Does the format suit the new data?
-   - Bullet list good for multiple items
-   - Table good for structured comparisons
-   - Paragraph good for narrative explanations
+EVALUATION CRITERIA:
+1. Data Shape Match (PRIMARY): If the new requirement introduces a list of items (e.g., multiple ingredients), prioritize candidates that naturally use lists or tables. If the requirement introduces single threshold values, prioritize candidates with clean key-value prose or simple paragraphs.
+2. Structural Capacity: Does the candidate have the structural capacity to house the described change? E.g., if we are adding structured safety limits for a chemical, a paragraph might be messy, but a table layout from a candidate would be excellent.
+3. Tone and Vocabulary Alignment: Does the candidate employ a formal, regulatory tone that fits standard compliance declarations?
+4. Target Section Transition: If the target section exists but is currently empty or states "None," prioritize candidates that provide a robust framework to transition the target section into an active, data-rich state.
 
-2. CONTENT STRUCTURE: Does the section structure align with new needs?
-   - Similar level of detail
-   - Similar regulatory scope
-   - Similar data organization
-
-3. APPLICABILITY: Will this reference help generate correct content?
-   - Not just "similar concept" - must be practically useful
-   - Format should match what's needed for new data
-
-You can analyze all candidates but MUST select exactly ONE (0-based index).
-Your reasoning should focus on WHY this reference is most appropriate for generating new content."""
+INSTRUCTIONS:
+- Review the Change Requirements and Target Context.
+- Analyze ALL Candidate References provided.
+- You MUST select the single best candidate. Provide the 0-based integer index of your choice.
+- Justify your choice by comparing its structural advantages over the others."""
 
         user_prompt = f"""CHANGE REQUIREMENTS:
 Concept: {concept}
 New Situation: {new_situation}
-Change Description: {change_description}
+Specific Changes:
+{change_description}
+
 {target_context}
 
 CANDIDATE REFERENCES:
 {candidates_text}
 
-Analyze all candidates and select the BEST reference for generating content.
-Output format:
-- selected_index: (0-based index of best candidate)
-- reasoning: (detailed explanation of why this is most appropriate)
-- format_match: (excellent/good/acceptable/poor)"""
+Analyze the candidates against the evaluation criteria and select the most appropriate reference format skeleton to house the new changes.
+Output JSON strictly conforming to the schema with:
+- selected_index: (int) 0-based index of best candidate
+- reasoning: (str) Clear explanation detailing structural/format advantages
+- format_match: (str) "excellent", "good", "acceptable", or "poor\""""
 
         try:
             selection = self.llm.ask_structured_pydantic(

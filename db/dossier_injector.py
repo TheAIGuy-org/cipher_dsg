@@ -6,8 +6,12 @@ Handles: new section creation, renumbering, hierarchy updates, versioning.
 
 from typing import Dict, List, Optional
 from datetime import datetime
+import json
 from graph.neo4j_client import Neo4jClient, client as neo4j_singleton
 from llm.content_generator import GeneratedContent
+from parsers.section_profiler import create_profiler, SectionProfiler
+from llm.azure_client import get_llm_client
+from embeddings.embedder import get_embedder
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,14 +46,27 @@ class DossierInjector:
     Handles structural changes (new sections, renumbering, hierarchy).
     """
     
-    def __init__(self, neo4j_client: Optional[Neo4jClient] = None):
+    def __init__(self, neo4j_client: Optional[Neo4jClient] = None, profiler: Optional['SectionProfiler'] = None):
         """
         Initialize injector.
         
         Args:
             neo4j_client: Connected Neo4j client (uses singleton if not provided)
+            profiler: Section profiler to generate semantic descriptors and embeddings
         """
         self.neo4j = neo4j_client or neo4j_singleton
+        
+        if profiler:
+            self.profiler = profiler
+        else:
+            try:
+                llm = get_llm_client()
+                embedder = get_embedder()
+                self.profiler = create_profiler(llm=llm, embedder=embedder)
+            except Exception as e:
+                logger.error(f"Failed to initialize profiler: {e}")
+                self.profiler = None
+                
         logger.info("DossierInjector initialized (Phase 10)")
     
     def inject_approved_content(
@@ -126,7 +143,7 @@ class DossierInjector:
         version_id = f"v_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         query = """
-        MATCH (d:Dossier {product_code: $product_code})
+        MATCH (p:Product {product_code: $product_code})-[:HAS_DOSSIER]->(d:DossierVersion)
         CREATE (v:Version {
             id: $version_id,
             product_code: $product_code,
@@ -137,8 +154,8 @@ class DossierInjector:
         CREATE (d)-[:HAS_VERSION]->(v)
         
         // Snapshot all current sections
-        WITH v
-        MATCH (d:Dossier {product_code: $product_code})-[:HAS_SECTION]->(s:Section)
+        WITH v, $product_code as p_code
+        MATCH (prod:Product {product_code: p_code})-[:HAS_DOSSIER]->(dv:DossierVersion)-[:HAS_SECTION]->(s:Section)
         CREATE (v)-[:SNAPSHOT_OF]->(s)
         
         RETURN v.id as version_id
@@ -196,23 +213,43 @@ class DossierInjector:
     
     def _create_new_section(self, content: GeneratedContent) -> str:
         """
-        Create a new section node with content.
+        Create a new section node with content and semantic embeddings.
         
         Returns:
             Created section ID
         """
         section_id = f"{content.product_code}_{content.section_number.replace('.', '_')}"
         
+        # Generate semantic metadata for semantic routing / RAG later
+        description = "New Section"
+        embedding = []
+        characteristics = "{}"
+        domain_concepts = []
+        
+        if self.profiler:
+            try:
+                profile = self.profiler.generate_semantic_profile(content.section_title, content.generated_text)
+                domain_concepts = self.profiler.extract_domain_concepts(content.section_title, content.generated_text)
+                description = profile.situation_description
+                embedding = profile.situation_embedding
+                characteristics = json.dumps(profile.characteristics)
+            except Exception as e:
+                logger.error(f"Failed to generate semantic profile: {e}")
+        
         query = """
-        MATCH (d:Dossier {product_code: $product_code})
+        MATCH (p:Product {product_code: $product_code})-[:HAS_DOSSIER]->(d:DossierVersion)
         
         CREATE (s:Section {
-            id: $section_id,
+            section_id: $section_id,
             section_number: $section_number,
             title: $title,
             product_code: $product_code,
             full_text: $content,
             content: $content,
+            semantic_description: $semantic_description,
+            semantic_embedding: $semantic_embedding,
+            semantic_characteristics: $semantic_characteristics,
+            domain_concepts: $domain_concepts,
             created_at: datetime(),
             created_by: 'realtime_agent',
             version: 1,
@@ -222,18 +259,18 @@ class DossierInjector:
         CREATE (d)-[:HAS_SECTION]->(s)
         
         // Find parent section and link
-        WITH s
+        WITH s, $product_code as p_code, $section_number as sec_num
         OPTIONAL MATCH (parent:Section {
-            product_code: $product_code
+            product_code: p_code
         })
-        WHERE $section_number STARTS WITH parent.section_number + '.'
-        AND size(split($section_number, '.')) = size(split(parent.section_number, '.')) + 1
+        WHERE sec_num STARTS WITH parent.section_number + '.'
+        AND size(split(sec_num, '.')) = size(split(parent.section_number, '.')) + 1
         
         FOREACH (_ IN CASE WHEN parent IS NOT NULL THEN [1] ELSE [] END |
-            CREATE (parent)-[:HAS_SUBSECTION {order: toInteger(split($section_number, '.')[-1])}]->(s)
+            CREATE (parent)-[:HAS_SUBSECTION {order: toInteger(split(sec_num, '.')[-1])}]->(s)
         )
         
-        RETURN s.id as section_id
+        RETURN coalesce(s.section_id, s.id) as section_id
         """
         
         result = self.neo4j.run_auto_commit(
@@ -243,7 +280,11 @@ class DossierInjector:
                 "section_number": content.section_number,
                 "title": content.section_title,
                 "product_code": content.product_code,
-                "content": content.generated_text
+                "content": content.generated_text,
+                "semantic_description": description,
+                "semantic_embedding": embedding,
+                "semantic_characteristics": characteristics,
+                "domain_concepts": domain_concepts
             }
         )
         
@@ -251,12 +292,28 @@ class DossierInjector:
     
     def _update_existing_section(self, content: GeneratedContent) -> str:
         """
-        Update existing section with new content.
+        Update existing section with new content and embeddings.
         Maintains version history.
         
         Returns:
             Updated section ID
         """
+        # Generate semantic metadata for semantic routing / RAG later
+        description = "Updated Section"
+        embedding = []
+        characteristics = "{}"
+        domain_concepts = []
+        
+        if self.profiler:
+            try:
+                profile = self.profiler.generate_semantic_profile(content.section_title, content.generated_text)
+                domain_concepts = self.profiler.extract_domain_concepts(content.section_title, content.generated_text)
+                description = profile.situation_description
+                embedding = profile.situation_embedding
+                characteristics = json.dumps(profile.characteristics)
+            except Exception as e:
+                logger.error(f"Failed to generate semantic profile: {e}")
+                
         query = """
         MATCH (s:Section {
             product_code: $product_code,
@@ -271,9 +328,13 @@ class DossierInjector:
             s.full_text = $new_content,
             s.version = COALESCE(s.version, 1) + 1,
             s.updated_at = datetime(),
-            s.updated_by = 'realtime_agent'
+            s.updated_by = 'realtime_agent',
+            s.semantic_description = $semantic_description,
+            s.semantic_embedding = $semantic_embedding,
+            s.semantic_characteristics = $semantic_characteristics,
+            s.domain_concepts = $domain_concepts
         
-        RETURN s.id as section_id
+        RETURN coalesce(s.section_id, s.id) as section_id
         """
         
         result = self.neo4j.run_auto_commit(
@@ -281,7 +342,11 @@ class DossierInjector:
             params={
                 "product_code": content.product_code,
                 "section_number": content.section_number,
-                "new_content": content.generated_text
+                "new_content": content.generated_text,
+                "semantic_description": description,
+                "semantic_embedding": embedding,
+                "semantic_characteristics": characteristics,
+                "domain_concepts": domain_concepts
             }
         )
         

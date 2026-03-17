@@ -125,7 +125,8 @@ class SectionSituationAnalyzer:
             section_state=section_state,
             current_description=section.current_semantic_description,
             new_description=new_situation,
-            domain_concepts=section.current_domain_concepts
+            domain_concepts=section.current_domain_concepts,
+            concept_changes=section.related_concept_changes
         )
         
         log.debug(
@@ -192,6 +193,33 @@ Return JSON: {{"new_situation": "..."}}
         
         return response.new_situation
     
+    def _build_concrete_change_details(self, concept_changes: List, current_description: str, new_description: str) -> str:
+        """
+        Build concrete, specific details about what's actually changing.
+        
+        Instead of: "new allergen added" 
+        Provide: "Add allergen 'Mercury2' to empty section that currently says 'no allergen must be labelled'"
+        """
+        details = []
+        for cc in concept_changes:
+            # Extract concrete data from change
+            entity = cc.affected_entity if hasattr(cc, 'affected_entity') else "unknown entity"
+            
+            detail = f"""• {cc.change_type.upper()}
+  Concept: {cc.concept}
+  Description: {cc.description}
+  Affected: {entity}
+  Confidence: {cc.confidence if hasattr(cc, 'confidence') else 'N/A'}"""
+            details.append(detail)
+        
+        # Add context
+        full_context = f"""Current state: {current_description}
+New state: {new_description}
+
+Specific changes:
+""" + "\n\n".join(details)
+        
+        return full_context
     
     def _get_section_state(self, section_id: str, product_code: str) -> Dict:
         """
@@ -227,7 +255,7 @@ Return JSON: {{"new_situation": "..."}}
                     'has_content': False,
                     'content_format': 'unknown',
                     'content_length': 0,
-                    'full_text_preview': ''
+                    'full_text': ''
                 }
             
             row = result[0]
@@ -239,7 +267,7 @@ Return JSON: {{"new_situation": "..."}}
                 'has_content': content_length > 50,  # Has meaningful content
                 'content_format': row.get('format') or 'unknown',
                 'content_length': content_length,
-                'full_text_preview': content[:200] if content else ''
+                'full_text': content  # FULL CONTENT - no truncation
             }
             
         except Exception as e:
@@ -249,7 +277,7 @@ Return JSON: {{"new_situation": "..."}}
                 'has_content': False,
                 'content_format': 'unknown',
                 'content_length': 0,
-                'full_text_preview': ''
+                'full_text': ''
             }
     
     def _determine_pattern_from_format(
@@ -257,10 +285,11 @@ Return JSON: {{"new_situation": "..."}}
         section_state: Dict,
         current_description: str,
         new_description: str,
-        domain_concepts: List[str]
+        domain_concepts: List[str],
+        concept_changes: List
     ) -> PatternDecisionOutput:
         """
-        NEW LOGIC: Decide based on FORMAT COMPATIBILITY, not content amount.
+        NEW LOGIC: Decide based on FORMAT COMPATIBILITY with CONCRETE data.
         
         Decision tree:
         1. Section EXISTS + has canonical format → Check format compatibility
@@ -297,44 +326,67 @@ Return JSON: {{"new_situation": "..."}}
             )
             
             # Use LLM to assess format compatibility
-            system_prompt = f"""You are a document format analyst.
+            system_prompt = f"""You are a document format analyst and regulatory dossier expert.
 
-Your task: Determine if a section's EXISTING FORMAT can accommodate new changes.
+Your task: Determine if a section's EXISTING FORMAT AND VOCABULARY can accommodate new changes, or if a NEW_PATTERN (a new template from another dossier) is required.
 
-Key principle: **SAME_PATTERN unless format is structurally incompatible**
+Key principle: Use SAME_PATTERN if the existing section already gracefully handles this type of data. Use NEW_PATTERN if the fundamental nature of the section is changing.
 
 Format compatibility examples:
 ✅ SAME_PATTERN:
   - Bullet list + add 1 item → still bullet list
   - Table + add 1 row → still table
-  - Prose paragraph + add 1 sentence → still prose
+  - Section lists something -> adding another thing into the list
+  - Section states X% limit -> updating to Y% limit
 
-❌ NEW_PATTERN (rare):
+❌ NEW_PATTERN:
+  - Section currently states "None present" or "Not applicable" + now there IS data to report → needs a new template to show HOW to report the data (vocabulary, table structure).
   - Single sentence + add 20 items → needs structure (list/table)
   - Bullet list + need multi-column data → needs table
   
 Current format: {canonical_format}
 Content length: {section_state['content_length']} chars"""
 
-            user_prompt = f"""**Current section state:**
+            # Build concrete change details with actual data
+            change_details = self._build_concrete_change_details(
+                concept_changes, current_description, new_description
+            )
+            
+            user_prompt = f"""**CURRENT SECTION (COMPLETE CONTENT):**
 Format: {canonical_format}
-Has content: {has_content}
-Content preview: {section_state['full_text_preview']}
+Length: {section_state['content_length']} chars
 
-**Current situation:**
-{current_description}
+FULL CURRENT CONTENT:
+{section_state['full_text']}
 
-**After changes:**
+---
+
+**CONCRETE CHANGES TO APPLY:**
+{change_details}
+
+---
+
+**RESULTING SITUATION:**
 {new_description}
 
-**Reference formats from similar sections:**
+---
+
+**REFERENCE FORMATS (similar sections):**
 {reference_evidence}
 
-**Question:** Can the existing '{canonical_format}' format accommodate the new changes?
+---
+
+**DECISION REQUIRED:**
+Can the existing '{canonical_format}' format AND the existing wording accommodate these specific changes properly?
+
+Consider:
+- Is this just adding/updating items in an existing format that ALREADY lists such items? → SAME_PATTERN
+- Does the current section state "None present" or "Not applicable", but the change introduces actual data (like a new allergen) that requires a specific reporting format or table we don't currently have in this section? → NEW_PATTERN
+- Do we need a completely different structure (e.g., text → table)? → NEW_PATTERN
 
 Answer with:
 - pattern_change: "SAME_PATTERN" or "NEW_PATTERN"
-- reasoning: Why the format works or doesn't work
+- reasoning: Why the format works or doesn't work (be specific about actual data and if the fundamental nature changed)
 - evidence_used: Which evidence informed your decision"""
 
             try:

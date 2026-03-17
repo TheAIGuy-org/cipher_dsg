@@ -8,6 +8,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from llm.azure_client import AzureLLMClient
 from parsers.models import SectionUpdatePlan, ConceptChangeOutput
+from graph.neo4j_client import client as neo4j_client
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -82,6 +83,10 @@ class SectionContentGenerator:
             renumbering_map = plan.__dict__.get('renumbering_required', {})
             requires_renumbering = bool(renumbering_map)
         
+        # Check if section actually exists in graph
+        # NEW_PATTERN doesn't mean "new section", it means "different format"
+        is_new_section = self._check_section_exists(plan.product_code, plan.section_number) == False
+        
         # Build output
         content = GeneratedContent(
             plan_id=f"{plan.product_code}_{plan.section_number}",
@@ -93,7 +98,7 @@ class SectionContentGenerator:
             generation_confidence=self._calculate_confidence(plan),
             changes_applied=[f"{cc.concept}: {cc.change_type}" for cc in plan.concept_changes],
             reference_product=plan.reference_product_code,
-            is_new_section=(plan.pattern_change_type == "NEW_PATTERN"),
+            is_new_section=is_new_section,
             requires_renumbering=requires_renumbering,
             renumbering_map=renumbering_map
         )
@@ -159,54 +164,49 @@ Identify the format style, vocabulary patterns, and structural organization."""
             for cc in plan.concept_changes
         ])
         
-        system_prompt = f"""You are an expert regulatory dossier writer for cosmetic products.
+        # Prepare vocabulary patterns - NO TRUNCATION
+        vocab_patterns_text = ', '.join(format_style.get('vocabulary_patterns', []))
+        if not vocab_patterns_text:
+            vocab_patterns_text = "standard regulatory terminology"
+        
+        system_prompt = f"""You are an expert regulatory dossier writer, responsible for drafting highly precise compliance documents.
 
-Generate section content that:
-1. Matches the EXACT format style of the reference: {format_style['style']}
-2. Uses similar vocabulary patterns: {', '.join(format_style.get('vocabulary_patterns', [])[:3])}
-3. Follows the structural pattern: {format_style['structural_pattern']}
-4. Incorporates ALL the new changes with specific data (substance names, concentrations, classifications)
-5. Maintains regulatory compliance and precision
+Your objective is to generate the COMPLETE text for a specific section of a product dossier. You will be acting as a strict template engine: you are mapping NEW DATA into a REFERENCE FORMAT skeleton.
 
-CRITICAL - DATA vs FORMAT:
-- The reference section is from a DIFFERENT product - use it ONLY for format/style/vocabulary
-- DO NOT copy specific substance names, allergens, or data from the reference
-- ONLY include data explicitly mentioned in the "NEW CHANGES" section
-- If reference lists "Substance A, Substance B" but changes only add "Substance C" → output ONLY "Substance C"
-- Reference = template for HOW to write, NOT WHAT to write
+INSTRUCTIONS & RULES:
+1. FORMAT MIMICRY (HOW to write):
+   - You MUST adopt the exact structural layout of the provided Reference Section. If it uses markdown tables, you use tables. If it uses bullet points, you use bullet points. If it uses standard prose, you use prose.
+   - You MUST mimic the tone, legal framing, and regulatory vocabulary found in the Reference Section (e.g., detected patterns: {vocab_patterns_text}).
+   - Detected Reference Format Constraint: {format_style['style']}
+   - Detected Reference Structural Pattern: {format_style['structural_pattern']}
 
-FORMAT RULES:
-- Use the SAME format structure as the reference (bullets, tables, prose)
-- Keep regulatory tone and vocabulary from reference
-- Be precise with numbers and units from changes"""
+2. DATA ISOLATION (WHAT to write):
+   - You must NOT carry over ANY specific product data, chemical names, concentrations, or entity names from the Reference Section. It is strictly a formatting skeleton.
+   - You MUST populate the skeleton ONLY with the data provided in the "DATA TO INJECT" block.
+   - Retain facts from the "Current State" ONLY if they remain valid and are not overridden by the Specific Changes.
 
-        user_prompt = f"""Reference Section from Product {plan.reference_product_code}:
-Section {plan.reference_section_number}: {plan.title}
+3. COMPLETENESS:
+   - Output the finalized, complete content for the target section.
+   - DO NOT wrap your output in markdown code blocks or add conversational filler. Output raw, immediate content.
+"""
 
+        user_prompt = f"""== REFERENCE SKELETON (Adopt format and vocabulary, drop specific data) ==
+Source: Product {plan.reference_product_code}, Section {plan.reference_section_number}: {plan.title}
+Text:
 {plan.reference_full_text}
 
----
-
-NEW CHANGES to incorporate:
-{change_details}
-
----
-
-Current Situation:
+== DATA TO INJECT ==
+Current State:
 {plan.old_semantic_description}
 
-Target Situation:
+New Target State:
 {plan.new_semantic_description}
 
----
+Specific Changes to Apply:
+{change_details}
 
-Generate the COMPLETE section content for Product {plan.product_code} that:
-- Uses the same format style as the reference
-- Incorporates all the new change data with specific details
-- Maintains regulatory compliance
-- Matches the vocabulary and tone
-
-Output ONLY the section content (no explanations or meta-text)."""
+== TASK ==
+Generate the complete content for Product {plan.product_code}, strictly applying the 'DATA TO INJECT' into the structural/vocabulary skeleton of the 'REFERENCE SKELETON'. Output only the finalized section text."""
 
         try:
             response = self.llm.ask(
@@ -244,3 +244,44 @@ Output ONLY the section content (no explanations or meta-text)."""
             confidence += 0.1
         
         return min(confidence, 1.0)
+    
+    def _check_section_exists(self, product_code: str, section_number: str) -> bool:
+        """
+        Check if section actually exists in Neo4j graph.
+        
+        This determines whether we CREATE or UPDATE.
+        NEW_PATTERN doesn't mean "new section" - it means "different format".
+        
+        Args:
+            product_code: Product code
+            section_number: Section number
+            
+        Returns:
+            True if section exists, False otherwise
+        """
+        query = """
+        MATCH (s:Section {
+            product_code: $product_code,
+            section_number: $section_number
+        })
+        RETURN count(s) > 0 as exists
+        """
+        
+        try:
+            results = neo4j_client.run_query(
+                query,
+                {
+                    "product_code": product_code,
+                    "section_number": section_number
+                }
+            )
+            
+            if results and len(results) > 0:
+                return results[0].get('exists', False)
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to check section existence: {e}")
+            # Default to UPDATE (safer than creating duplicates)
+            return True
