@@ -250,10 +250,12 @@ class UpdatePlanBuilder:
             result = self.neo4j.run_query(query, {"section_id": section_id})
             if result:
                 section = result[0]
+                # In plan_builder.py _get_section_state_for_selection — add full_text to return
                 return {
                     'section_number': section['section_number'],
                     'title': section['title'],
-                    'has_content': section['content_length'] > 50,  # Meaningful content
+                    'full_text': section.get('full_text') or '',   # ← this line
+                    'has_content': section['content_length'] > 50,
                     'content_format': section['content_format'],
                     'content_length': section['content_length']
                 }
