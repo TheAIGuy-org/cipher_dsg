@@ -233,6 +233,9 @@ Output JSON strictly conforming to the schema with:
                 user_prompt=user_prompt,
                 response_model=ReferenceSelectionOutput
             )
+
+            print(concept)
+            print(change_description)
             
             selected_idx = selection.selected_index
             if selected_idx < 0 or selected_idx >= len(candidates):

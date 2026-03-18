@@ -23,6 +23,14 @@ from db.sql_client import SQLServerClient, get_sql_client
 from llm.azure_client import AzureLLMClient, get_llm_client
 from prompts import get_prompt
 from utils.logger import get_logger
+from pydantic import BaseModel, Field
+
+class ConceptChangeOutputList(BaseModel):
+    """Container for multiple concept changes."""
+    items: List[ConceptChangeOutput] = Field(
+        ..., 
+        description="List of distinct regulatory concepts extracted. If multiple distinct entities/substances were changed (e.g., two different trace substances), output multiple corresponding concepts."
+    )
 
 log = get_logger(__name__)
 
@@ -100,18 +108,19 @@ class ChangeInterpreter:
                     other_groups = {k: v for k, v in change_groups.items() if k != group_key}
                     related_changes = self._build_group_context(other_groups)
                 
-                # Interpret group of related changes as ONE concept
-                concept = self.interpret_change_group(
+                # Interpret group of related changes as one OR MORE concepts
+                concept_list_output = self.interpret_change_group(
                     changes=group_changes,
                     related_changes=related_changes
                 )
                 
-                concepts.append(concept)
+                concepts.extend(concept_list_output)
                 
-                log.debug(
-                    f"Interpreted change {group_idx+1}/{len(change_groups)}: "
-                    f"{concept.concept} ({concept.change_type})"
-                )
+                for concept in concept_list_output:
+                    log.debug(
+                        f"Interpreted change {group_idx+1}/{len(change_groups)}: "
+                        f"{concept.concept} ({concept.change_type})"
+                    )
             
             except Exception as e:
                 first_change = group_changes[0]  # Get representative change for error logging
@@ -273,20 +282,21 @@ class ChangeInterpreter:
         self,
         changes: List[DBChangeRecord],
         related_changes: Optional[str] = None
-    ) -> ConceptChangeOutput:
+    ) -> List[ConceptChangeOutput]:
         """
-        Interpret a GROUP of related changes as ONE regulatory concept.
+        Interpret a GROUP of related changes as one or more regulatory concepts.
         
-        This is the key fix: instead of interpreting SubstanceName, Classification,
-        MaxLevelPPM separately, we interpret them TOGETHER to understand the full
-        semantic meaning (e.g., "heavy metal monitoring").
+        This handles timestamp bucketing. If the columns belong to the exact same 
+        row/entity, they represent a single concept. If they represent updates to 
+        MULTIPLE distinct entities (e.g., updating two different CMR traces 
+        simultaneously), this returns multiple distinct concepts.
         
         Args:
-            changes: List of related change records (same row/operation)
+            changes: List of related change records (same bucket)
             related_changes: Context about OTHER change groups (optional)
         
         Returns:
-            Single ConceptChangeOutput representing the full semantic change
+            List of ConceptChangeOutput representing the full semantic changes
         """
         log.debug(f"Interpreting group of {len(changes)} related changes")
         
@@ -332,9 +342,9 @@ RELATED CHANGES IN THIS BUNDLE:
 {related_changes or 'None (single change group)'}
 
 CRITICAL INSTRUCTION:
-Look at ALL column values together to understand the FULL semantic meaning.
-Example: If SubstanceName='Lead' AND Classification='Heavy Metal', 
-the concept is "heavy metal monitoring", NOT just "substance traceability"!
+Look at ALL column values together. 
+- If the changes belong to the EXACT SAME entity/row (e.g., adding a single Heavy Metal and setting its concentration), group them into a SINGLE concept.
+- If the changes represent MULTIPLE DIFFERENT entities/rows (e.g., updating limits for two completely different Trace substances like Dichloromethane AND Dihexylphthalate), you MUST extract MULTIPLE distinct concepts and return them all in the list! Do not merge distinct physical entities into one concept.
 
 Use the Classification/Type columns to identify SPECIFIC regulatory concepts:
 - If Classification contains "Heavy Metal" → concept should be "heavy metal content"
@@ -342,23 +352,21 @@ Use the Classification/Type columns to identify SPECIFIC regulatory concepts:
 - If Classification contains "Allergen" → concept should be "allergen declaration"
 - Use the MOST SPECIFIC concept that applies!
 
-Extract the regulatory concept that this change represents.
+Extract all distinct regulatory concepts that these changes represent into the items array.
 """
-        
         # Call LLM with structured output
         try:
             result = self.azure_client.ask_structured_pydantic(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                response_model=ConceptChangeOutput
+                response_model=ConceptChangeOutputList
             )
             
             log.debug(
-                f"LLM interpretation (group): {result.concept} "
-                f"({result.change_type}, confidence={result.confidence})"
+                f"LLM interpretation (group) returned {len(result.items)} concepts."
             )
             
-            return result
+            return result.items
         
         except Exception as e:
             log.error(f"LLM interpretation failed: {e}", exc_info=True)

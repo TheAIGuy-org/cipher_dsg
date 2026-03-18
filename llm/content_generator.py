@@ -79,9 +79,9 @@ class SectionContentGenerator:
         renumbering_map = {}
         requires_renumbering = False
         
-        if hasattr(plan, '__dict__') and 'renumbering_required' in plan.__dict__:
-            renumbering_map = plan.__dict__.get('renumbering_required', {})
-            requires_renumbering = bool(renumbering_map)
+        # if hasattr(plan, '__dict__') and 'renumbering_required' in plan.__dict__:
+        #     renumbering_map = plan.__dict__.get('renumbering_required', {})
+        #     requires_renumbering = bool(renumbering_map)
         
         # Check if section actually exists in graph
         # NEW_PATTERN doesn't mean "new section", it means "different format"
@@ -100,7 +100,7 @@ class SectionContentGenerator:
             reference_product=plan.reference_product_code,
             is_new_section=is_new_section,
             requires_renumbering=requires_renumbering,
-            renumbering_map=renumbering_map
+            renumbering_map=renumbering_map ##dict
         )
         
         logger.info(f"   ✅ Generated {len(generated_text)} chars (confidence: {content.generation_confidence:.2f})")

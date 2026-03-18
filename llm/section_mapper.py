@@ -274,13 +274,12 @@ A change has been detected. You must:
 - **replace**: Structural or fundamental content change (rare)
 - **remove**: Delete outdated information (very rare)
 
-**STEP 3: Minimize Disruption**
-- ALWAYS prefer modifying existing content over creating new sections
-- Creating new sections should be RARE - only when:
-  * Topic genuinely not covered anywhere in current dossier
-  * CANDIDATE sections exist in other products (marked [CANDIDATE])
-  * Regulatory requirement for separate section
-- For value updates (X → Y), concentration changes, limit adjustments: ALWAYS modify existing section
+**STEP 3: Decide Between Modifying Existing vs. Creating New**
+- ALWAYS prefer modifying an existing section if the topic logically fits there (e.g. updating a concentration limit).
+- HOWEVER, if the change introduces an entirely new regulatory category (e.g., a new "Heavy Metals" requirement) that is NOT adequately covered by ANY existing section in the dossier, you MUST create a new section.
+- To create a completely new section, use a logical placeholder for the section number starting with "NEW_" (e.g., "NEW_HEAVY_METALS") and provide a descriptive title.
+- Set update_type to "create" when suggesting a completely new section.
+- For value updates (X → Y), concentration changes, limit adjustments: ALWAYS modify existing section.
 
 **STEP 4: Priority Assessment**
 - CRITICAL: Safety, legal compliance, prohibited substances, recalls
@@ -330,8 +329,8 @@ Confidence: {concept.confidence}
    - Does it discuss related topics where this fits? → append
    - Or is this completely new content? → consider new section (rare)
 
-4. Be SELECTIVE - only return sections that genuinely need updates
-5. Prioritize MINIMAL DISRUPTION - modify existing content whenever possible
+4. Be SELECTIVE - only return sections that genuinely need updates.
+5. If the topic is entirely new to the domain and doesn't fit existing sections, invent a new section using "NEW_X" format.
 
 Provide your analysis now."""
         
@@ -359,14 +358,14 @@ Provide your analysis now."""
                     log.warning(f"Invalid priority '{section_detail.priority}', using MEDIUM")
                 
                 try:
-                    update_type = SectionUpdateType(section_detail.update_type.lower())
-                except:# Default based on section status
-                    if 'suggested_new' in str(section_info.get('section_status', '')):
+                    update_type_str = section_detail.update_type.lower()
+                    if update_type_str == "create" or section_detail.section_number.startswith("NEW_"):
                         update_type = SectionUpdateType.CREATE
                         log.info(f"  Section {section_detail.section_number} marked as CREATE (suggested new)")
                     else:
-                        update_type = SectionUpdateType.MODIFY
-                        update_type = SectionUpdateType.MODIFY
+                        update_type = SectionUpdateType(update_type_str)
+                except ValueError:
+                    update_type = SectionUpdateType.MODIFY
                     log.warning(f"Invalid update_type '{section_detail.update_type}', using MODIFY")
                 
                 # Find section in all_sections to get content length

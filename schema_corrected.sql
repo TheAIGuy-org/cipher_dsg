@@ -60,6 +60,8 @@ PRINT 'Step 1: Tearing down existing objects...';
 GO
 
 -- Drop triggers first
+IF OBJECT_ID('dbo.trg_RawMaterialHeavyMetals_Change', 'TR') IS NOT NULL
+    DROP TRIGGER dbo.trg_RawMaterialHeavyMetals_Change;
 IF OBJECT_ID('dbo.trg_RawMaterialAllergens_Change', 'TR') IS NOT NULL
     DROP TRIGGER dbo.trg_RawMaterialAllergens_Change;
 IF OBJECT_ID('dbo.trg_RawMaterialTraces_Change', 'TR') IS NOT NULL
@@ -84,6 +86,7 @@ IF OBJECT_ID('dbo.ProductChangeLog',   'U') IS NOT NULL DROP TABLE dbo.ProductCh
 IF OBJECT_ID('dbo.SupplierDocuments',  'U') IS NOT NULL DROP TABLE dbo.SupplierDocuments;
 IF OBJECT_ID('dbo.ProductMarkets',     'U') IS NOT NULL DROP TABLE dbo.ProductMarkets;
 IF OBJECT_ID('dbo.ProductBatchTests',  'U') IS NOT NULL DROP TABLE dbo.ProductBatchTests;
+IF OBJECT_ID('dbo.RawMaterialHeavyMetals', 'U') IS NOT NULL DROP TABLE dbo.RawMaterialHeavyMetals;
 IF OBJECT_ID('dbo.RawMaterialTraces',  'U') IS NOT NULL DROP TABLE dbo.RawMaterialTraces;
 IF OBJECT_ID('dbo.RawMaterialAllergens','U') IS NOT NULL DROP TABLE dbo.RawMaterialAllergens;
 IF OBJECT_ID('dbo.ProductFormulations','U') IS NOT NULL DROP TABLE dbo.ProductFormulations;
@@ -143,6 +146,13 @@ CREATE TABLE RawMaterialAllergens (
     RawMaterialID INT NOT NULL REFERENCES RawMaterials(RawMaterialID),
     AllergenName  VARCHAR(255) NOT NULL,
     Notes         NVARCHAR(MAX)
+);
+
+CREATE TABLE RawMaterialHeavyMetals (
+    MetalID       INT PRIMARY KEY,
+    RawMaterialID INT NOT NULL REFERENCES RawMaterials(RawMaterialID),
+    MetalName     VARCHAR(255) NOT NULL,
+    MaxLevelPPM   DECIMAL(10, 4) NOT NULL
 );
 
 CREATE TABLE RawMaterialTraces (
@@ -842,6 +852,88 @@ BEGIN
               AND pcl.column_name = 'ResultValue'
               AND ISNULL(pcl.old_value, '') = CAST(d.ResultValue AS NVARCHAR(50))
               AND ISNULL(pcl.new_value, '') = CAST(i.ResultValue AS NVARCHAR(50))
+              AND pcl.status = 'pending'
+              AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+        );
+    END;
+END;
+GO
+
+-- ── Trigger: RawMaterialHeavyMetals ─────────────────────────────────────────
+CREATE OR ALTER TRIGGER dbo.trg_RawMaterialHeavyMetals_Change
+ON dbo.RawMaterialHeavyMetals
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @op VARCHAR(10);
+    IF EXISTS (SELECT 1 FROM inserted) AND NOT EXISTS (SELECT 1 FROM deleted)
+        SET @op = 'INSERT';
+    ELSE IF EXISTS (SELECT 1 FROM deleted) AND NOT EXISTS (SELECT 1 FROM inserted)
+        SET @op = 'DELETE';
+    ELSE
+        SET @op = 'UPDATE';
+
+    -- Log MetalName change
+    INSERT INTO dbo.ProductChangeLog
+        (product_code, source_table, column_name, op_type, old_value, new_value)
+    SELECT DISTINCT
+        p.ProductCode,
+        'RawMaterialHeavyMetals',
+        'MetalName',
+        @op,
+        d.MetalName,
+        i.MetalName
+    FROM
+        (SELECT MetalID, RawMaterialID, MetalName FROM deleted) d
+        FULL OUTER JOIN
+        (SELECT MetalID, RawMaterialID, MetalName FROM inserted) i
+            ON d.MetalID = i.MetalID
+        JOIN dbo.ProductFormulations pf
+            ON pf.RawMaterialID = COALESCE(i.RawMaterialID, d.RawMaterialID)
+        JOIN dbo.Products p
+            ON p.ProductID = pf.ProductID
+    WHERE NOT EXISTS (
+        SELECT 1 FROM dbo.ProductChangeLog pcl
+        WHERE pcl.product_code = p.ProductCode
+          AND pcl.source_table = 'RawMaterialHeavyMetals'
+          AND pcl.column_name = 'MetalName'
+          AND ISNULL(pcl.old_value, '') = ISNULL(d.MetalName, '')
+          AND ISNULL(pcl.new_value, '') = ISNULL(i.MetalName, '')
+          AND pcl.status = 'pending'
+          AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+    );
+
+    -- Log MaxLevelPPM changes separately
+    IF @op = 'UPDATE'
+    BEGIN
+        INSERT INTO dbo.ProductChangeLog
+            (product_code, source_table, column_name, op_type, old_value, new_value)
+        SELECT DISTINCT
+            p.ProductCode,
+            'RawMaterialHeavyMetals',
+            'MaxLevelPPM',
+            'UPDATE',
+            CAST(d.MaxLevelPPM AS NVARCHAR(50)),
+            CAST(i.MaxLevelPPM AS NVARCHAR(50))
+        FROM
+            (SELECT MetalID, RawMaterialID, MaxLevelPPM FROM deleted) d
+            JOIN
+            (SELECT MetalID, RawMaterialID, MaxLevelPPM FROM inserted) i
+                ON d.MetalID = i.MetalID
+            JOIN dbo.ProductFormulations pf
+                ON pf.RawMaterialID = i.RawMaterialID
+            JOIN dbo.Products p
+                ON p.ProductID = pf.ProductID
+        WHERE d.MaxLevelPPM <> i.MaxLevelPPM
+          AND NOT EXISTS (
+            SELECT 1 FROM dbo.ProductChangeLog pcl
+            WHERE pcl.product_code = p.ProductCode
+              AND pcl.source_table = 'RawMaterialHeavyMetals'
+              AND pcl.column_name = 'MaxLevelPPM'
+              AND ISNULL(pcl.old_value, '') = CAST(d.MaxLevelPPM AS NVARCHAR(50))
+              AND ISNULL(pcl.new_value, '') = CAST(i.MaxLevelPPM AS NVARCHAR(50))
               AND pcl.status = 'pending'
               AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
         );

@@ -117,8 +117,8 @@ class ChangeDetectionPipeline:
             log.info("\n🎯 PHASE 4: Mapping to Sections...")
             
             # Collect impacted sections - handle both EXISTING and NEW sections differently
-            impacted_sections_list = []
-            new_section_suggestions = []  # Sections that need to be created
+            impacted_sections_map = {}
+            new_section_suggestions_map = {}
             
             for concept in concept_changes:
                 impacts = self.section_mapper.map_concept_to_sections(
@@ -130,50 +130,63 @@ class ChangeDetectionPipeline:
                 for impact in impacts:
                     if impact.update_type.value == 'create':
                         # This is a NEW section that doesn't exist yet
-                        log.info(f"  🆕 Detected NEW section needed: {impact.section_id} - {impact.section_title}")
-                        new_section_suggestions.append({
-                            'section_number': impact.section_id,
-                            'title': impact.section_title,
-                            'concept': concept,
-                            'rationale': impact.rationale,
-                            'priority': impact.priority
-                        })
+                        new_key = impact.section_id
+                        if new_key not in new_section_suggestions_map:
+                            log.info(f"  🆕 Detected NEW section needed: {impact.section_id} - {impact.section_title}")
+                            new_section_suggestions_map[new_key] = {
+                                'section_number': impact.section_id,
+                                'title': impact.section_title,
+                                'concepts': [concept],
+                                'rationales': [impact.rationale],
+                                'priority': impact.priority
+                            }
+                        else:
+                            new_section_suggestions_map[new_key]['concepts'].append(concept)
+                            new_section_suggestions_map[new_key]['rationales'].append(impact.rationale)
                     else:
                         # Existing section - get details from Neo4j
-                        from graph.neo4j_client import client as neo4j_client
-                        section_query = """
-                        MATCH (s:Section {section_number: $section_number, product_code: $product_code})
-                        OPTIONAL MATCH (s)<-[:HAS_SECTION]-(d:DossierVersion)
-                        RETURN s.section_id AS section_id,
-                               d.dossier_id AS dossier_id,
-                               s.semantic_description AS semantic_description,
-                               s.semantic_embedding AS semantic_embedding,
-                               s.domain_concepts AS domain_concepts
-                        """
-                        section_data = neo4j_client.run_query(
-                            section_query,
-                            {
-                                'section_number': impact.section_id,
-                                'product_code': product_code
-                            }
-                        )
-                        
-                        if section_data:
-                            sd = section_data[0]
-                            impacted_section = ImpactedSection(
-                                section_id=sd['section_id'],
-                                section_number=impact.section_id,
-                                title=impact.section_title,
-                                dossier_id=sd.get('dossier_id', ''),
-                                product_code=product_code,
-                                current_semantic_description=sd.get('semantic_description', ''),
-                                current_semantic_embedding=sd.get('semantic_embedding', []),
-                                current_domain_concepts=sd.get('domain_concepts', []),
-                                related_concept_changes=[concept],
-                                mapping_confidence=impact.relevance_score
+                        sec_num = impact.section_id
+                        if sec_num in impacted_sections_map:
+                            impacted_sections_map[sec_num].related_concept_changes.append(concept)
+                        else:
+                            from graph.neo4j_client import client as neo4j_client
+                            section_query = """
+                            MATCH (s:Section {section_number: $section_number, product_code: $product_code})
+                            OPTIONAL MATCH (s)<-[:HAS_SECTION]-(d:DossierVersion)
+                            RETURN s.section_id AS section_id,
+                                   d.dossier_id AS dossier_id,
+                                   s.semantic_description AS semantic_description,
+                                   s.semantic_embedding AS semantic_embedding,
+                                   s.domain_concepts AS domain_concepts
+                            """
+                            section_data = neo4j_client.run_query(
+                                section_query,
+                                {
+                                    'section_number': impact.section_id,
+                                    'product_code': product_code
+                                }
                             )
-                            impacted_sections_list.append(impacted_section)
+                            
+                            if section_data:
+                                sd = section_data[0]
+                                impacted_section = ImpactedSection(
+                                    section_id=sd['section_id'],
+                                    section_number=impact.section_id,
+                                    title=impact.section_title,
+                                    dossier_id=sd.get('dossier_id', ''),
+                                    product_code=product_code,
+                                    current_semantic_description=sd.get('semantic_description', ''),
+                                    current_semantic_embedding=sd.get('semantic_embedding', []),
+                                    current_domain_concepts=sd.get('domain_concepts', []),
+                                    related_concept_changes=[concept],
+                                    mapping_confidence=impact.relevance_score
+                                )
+                                impacted_sections_map[sec_num] = impacted_section
             
+            # Convert maps to consolidated lists
+            impacted_sections_list = list(impacted_sections_map.values())
+            new_section_suggestions = list(new_section_suggestions_map.values())
+
             # Handle new section suggestions - these bypass pattern analysis
             update_plans = []
             
@@ -186,19 +199,24 @@ class ChangeDetectionPipeline:
                     # Need to determine WHERE this section fits in target product's hierarchy
                     
                     # Step 1: Find candidate reference sections
+                    # Use aggregated conceptual values
+                    combined_description = " AND ".join([c.description for c in new_sec['concepts']])
+                    primary_concept = new_sec['concepts'][0]
+                    combined_rationale = " | ".join(new_sec['rationales'])
+                    
                     reference_candidates = self.reference_finder.find_reference_section(
                         target_product_code=product_code,
-                        concept=new_sec['concept'].concept,
-                        new_situation_description=new_sec['concept'].description
+                        concept=primary_concept.concept,
+                        new_situation_description=combined_description
                     )
                     
                     if reference_candidates:
                         # Step 1b: Use LLM to select the best reference from candidates
-                        change_description = self.plan_builder._build_change_description([new_sec['concept']])
+                        change_description = self.plan_builder._build_change_description(new_sec['concepts'])
                         reference_info = self.reference_finder.select_best_reference_with_llm(
                             candidates=reference_candidates,
-                            concept=new_sec['concept'].concept,
-                            new_situation=new_sec['concept'].description,
+                            concept=primary_concept.concept,
+                            new_situation=combined_description,
                             change_description=change_description,
                             target_section_info=None
                         )
@@ -213,7 +231,7 @@ class ChangeDetectionPipeline:
                             target_product_code=product_code,
                             reference_section_number=reference_info['section_number'],
                             reference_title=reference_info['title'],
-                            concept=new_sec['concept']
+                            concept=primary_concept
                         )
                         target_section_number = placement.new_section_number
                         
@@ -227,9 +245,9 @@ class ChangeDetectionPipeline:
                             dossier_id='',
                             status="READY_FOR_GENERATION",
                             pattern_change_type="NEW_PATTERN",
-                            pattern_reasoning=f"New section required at {target_section_number}: {new_sec['rationale']}. Using {reference_info['product_code']} section {reference_info['section_number']} as template.",
+                            pattern_reasoning=f"New section required at {target_section_number}: {combined_rationale}. Using {reference_info['product_code']} section {reference_info['section_number']} as template.",
                             old_semantic_description="N/A - section does not exist yet",
-                            new_semantic_description=new_sec['concept'].description,
+                            new_semantic_description=combined_description,
                             reference_source="CROSS_DOSSIER",
                             reference_section_id=reference_info.get('section_id'),
                             reference_product_code=reference_info.get('product_code'),
@@ -238,7 +256,7 @@ class ChangeDetectionPipeline:
                             reference_content_format=reference_info.get('content_format', 'paragraphs'),
                             parent_section_number=placement.parent_number,
                             sibling_sections=[{"old": k, "new": v} for k, v in placement.renumber_plan.items()] if placement.renumber_plan else [],
-                            concept_changes=[new_sec['concept']],
+                            concept_changes=new_sec['concepts'],
                             overall_confidence="high"
                         )
                         update_plans.append(plan)
@@ -252,9 +270,9 @@ class ChangeDetectionPipeline:
                             dossier_id='',
                             status="PENDING_MANUAL_TEMPLATE",
                             pattern_change_type="NEW_PATTERN",
-                            pattern_reasoning=f"New section required but no reference found: {new_sec['rationale']}",
+                            pattern_reasoning=f"New section required but no reference found: {combined_rationale}",
                             old_semantic_description="N/A - section does not exist yet",
-                            new_semantic_description=new_sec['concept'].description,
+                            new_semantic_description=combined_description,
                             reference_source="NOT_FOUND",
                             reference_section_id=None,
                             reference_product_code=None,
@@ -263,7 +281,7 @@ class ChangeDetectionPipeline:
                             reference_content_format='unknown',
                             parent_section_number=None,
                             sibling_sections=[],
-                            concept_changes=[new_sec['concept']],
+                            concept_changes=new_sec['concepts'],
                             overall_confidence="low"
                         )
                         update_plans.append(plan)
