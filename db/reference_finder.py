@@ -47,16 +47,16 @@ class ReferenceSelectionOutput(BaseModel):
 class CrossDossierReferenceFinder:
     """
     Finds and intelligently selects best reference section from other dossiers.
-    
+
     NEW APPROACH:
     1. RAG: Get top-K candidates by semantic similarity
     2. LLM: Analyze all candidates and select most appropriate
     3. Return: Best reference for content generation
-    
+
     This removes rigid "section exists → use it" logic in favor of
     intelligent selection from multiple options.
     """
-    
+
     def __init__(
         self,
         neo4j_client: Optional[Neo4jClient] = None,
@@ -65,7 +65,7 @@ class CrossDossierReferenceFinder:
     ):
         """
         Initialize reference finder with LLM selector.
-        
+
         Args:
             neo4j_client: Neo4j client for graph queries
             embedder: Embedder for semantic comparison
@@ -74,36 +74,30 @@ class CrossDossierReferenceFinder:
         self.neo4j = neo4j_client or neo4j_singleton
         self.embedder = embedder or get_embedder()
         self.llm = llm or get_llm_client()
-        
+
         log.info("CrossDossierReferenceFinder initialized")
-    
+
     def find_reference_section(
         self,
         target_product_code: str,
         concept: str,
         new_situation_description: str,
-        top_k: int = 3  # Return top 3 for LLM selection
+        top_k: int = 3
     ) -> List[Dict]:
         """
         Find TOP-K candidate reference sections for LLM-based selection.
-        
-        NEW APPROACH: Instead of picking best match here, return top-K candidates.
-        Let the LLM analyze and select the most appropriate one based on:
-        - Semantic similarity to change
-        - Format appropriateness
-        - Content structure match
-        
+
         Steps:
         1. Graph filter: Find sections with similar concept
         2. Semantic rank: Get top-K by similarity
         3. Return all K candidates for LLM selection
-        
+
         Args:
             target_product_code: Product code to EXCLUDE
             concept: Regulatory concept to search for
             new_situation_description: Inferred new situation
             top_k: Number of candidates to return (default: 3)
-        
+
         Returns:
             List of top-K reference section dicts (or empty if none found)
         """
@@ -111,29 +105,26 @@ class CrossDossierReferenceFinder:
             f"Finding reference for concept '{concept}' "
             f"(target product: {target_product_code})"
         )
-        
-        # Step 1: Structured filter - get candidate sections
+
         candidates = self._get_candidate_sections(
             target_product_code=target_product_code,
             concept=concept,
-            top_k=top_k  # Get top_k candidates directly
+            top_k=top_k
         )
-        
+
         if not candidates:
             log.info(f"No candidate sections found for concept '{concept}'")
-            return []  # Empty list - LLM will handle "no reference" case
-        
+            return []
+
         log.info(f"Found {len(candidates)} candidate sections")
-        
-        # Step 2: Semantic ranking
+
         ranked = self._rank_by_semantic_similarity(
             new_situation_description=new_situation_description,
             candidates=candidates
         )
-        
-        # Return top-K for LLM selection
+
         top_candidates = ranked[:top_k]
-        
+
         log.info(f"Returning top {len(top_candidates)} candidates for LLM selection:")
         for idx, candidate in enumerate(top_candidates, 1):
             log.info(
@@ -141,9 +132,9 @@ class CrossDossierReferenceFinder:
                 f"Section {candidate['section_number']} "
                 f"(similarity: {candidate['similarity_score']:.3f})"
             )
-        
+
         return top_candidates
-    
+
     def select_best_reference_with_llm(
         self,
         candidates: List[Dict],
@@ -154,46 +145,58 @@ class CrossDossierReferenceFinder:
     ) -> Optional[Dict]:
         """
         Use LLM to intelligently select best reference from K candidates.
-        
-        TRULY INTELLIGENT SELECTION:
-        - Not just "highest similarity" (that's already done by RAG)
-        - LLM considers: format appropriateness, content structure, applicability
-        - Can reject ALL candidates if none are suitable
-        
+
         Args:
             candidates: Top-K candidates from RAG (already ranked by similarity)
             concept: Regulatory concept being addressed
             new_situation: Description of what needs to be added/changed
             change_description: Human description of the compliance change
             target_section_info: Optional info about target section (if exists)
-        
+
         Returns:
             Best reference dict or None if no suitable reference
         """
         if not candidates:
             log.info("No candidates provided - returning None")
             return None
-        
+
         if len(candidates) == 1:
             log.info(f"Only one candidate - auto-selecting: {candidates[0]['section_number']}")
             return candidates[0]
-        
+
         log.info(f"LLM selecting best from {len(candidates)} candidates...")
-        
+
         # Build candidate descriptions for LLM
         candidates_text = self._format_candidates_for_llm(candidates)
-        
+
         # Build target section context
         target_context = ""
         if target_section_info:
+            full_text = target_section_info.get('full_text', '').strip()
+            content_status = (
+                "Empty / no content yet"
+                if not target_section_info.get('has_content')
+                else f"{target_section_info.get('content_length', 0)} chars"
+            )
             target_context = f"""
 TARGET SECTION CONTEXT:
 - Section: {target_section_info.get('section_number', 'Unknown')}
 - Title: {target_section_info.get('title', 'Unknown')}
-- Current Content: {'Empty' if not target_section_info.get('has_content') else 'Has content'}
 - Current Format: {target_section_info.get('content_format', 'Unknown')}
+- Current Content Status: {content_status}
+- Current Full Text:
+{full_text if full_text else '(no content)'}
+
+IMPORTANT: The candidates below are from OTHER products. Use the target section's
+current content above as the baseline — the selected reference should complement
+or extend this existing structure, not replace it wholesale.
 """
-        
+            log.info(
+                f"  Target section full_text "
+                f"({target_section_info.get('section_number', '?')}): "
+                f"{(full_text or '(empty)')[:500]}"
+            )
+
         system_prompt = """You are an expert regulatory document format and structure analyst. Your task is to select the most optimal template/reference from a list of candidates to format new regulatory data.
 
 Your goal is strictly to identify the best structural and stylistic template for the new data. Do not focus purely on semantic meaning, but focus primarily on whether the candidate's layout, tables, bullet points, or prose style can seamlessly accommodate the shape and volume of the new data requirements.
@@ -233,54 +236,53 @@ Output JSON strictly conforming to the schema with:
                 user_prompt=user_prompt,
                 response_model=ReferenceSelectionOutput
             )
-            
+
             selected_idx = selection.selected_index
             if selected_idx < 0 or selected_idx >= len(candidates):
                 log.error(f"Invalid selection index: {selected_idx} (candidates: {len(candidates)})")
-                # Fallback to first candidate
                 selected_idx = 0
-            
+
             selected = candidates[selected_idx]
 
             print(f"LLM selected reference #{selected_idx + 1}: Product {selected['product_code']} Section {selected['section_number']}")
-            
-            log.info(                f"✅ LLM selected reference #{selected_idx + 1}: "
-
+            log.info(f"concept: {concept}")
+            log.info(f"new_situation: {new_situation}")
+            log.info(f"change_description: {change_description}")
+            log.info(
+                f"✅ LLM selected reference #{selected_idx + 1}: "
                 f"Product {selected['product_code']} Section {selected['section_number']}"
             )
             log.info(f"   Reasoning: {selection.reasoning}")
             log.info(f"   Format match: {selection.format_match}")
-            
+
             return selected
-            
+
         except Exception as e:
             log.error(f"LLM selection failed: {e}")
             log.info("Fallback: Using first candidate")
             return candidates[0]
-    
+
     def _format_candidates_for_llm(self, candidates: List[Dict]) -> str:
         """
         Format candidates into readable text for LLM analysis.
-        
+
         Provides FULL content (no truncation) so LLM can evaluate:
         - Format style (bullets, tables, prose)
         - Completeness (multiple items vs single)
         - Detail level (comprehensive vs basic)
         - Best match for the specific change type
-        
+
         Args:
             candidates: List of candidate section dicts
-        
+
         Returns:
             Formatted candidates text with FULL content
         """
         formatted = []
         for idx, candidate in enumerate(candidates):
-            # Provide FULL content - no truncation
-            # LLM needs complete format to judge appropriateness
             full_content = candidate.get('full_text', '')
             content_length = len(full_content)
-            
+
             candidate_text = f"""
 [{idx}] Product: {candidate['product_code']} - {candidate.get('product_name', 'Unknown')}
     Section: {candidate['section_number']} - {candidate['title']}
@@ -289,14 +291,14 @@ Output JSON strictly conforming to the schema with:
     Similarity Score: {candidate.get('similarity_score', 0):.3f}
     Semantic Description: {candidate.get('semantic_description', 'N/A')}
     Characteristics: {candidate.get('semantic_characteristics', 'N/A')}
-    
+
     FULL CONTENT:
 {full_content}
 """
             formatted.append(candidate_text)
-        
+
         return "\n".join(formatted)
-    
+
     def _get_candidate_sections(
         self,
         target_product_code: str,
@@ -305,22 +307,19 @@ Output JSON strictly conforming to the schema with:
     ) -> List[Dict]:
         """
         Query Neo4j for sections that address similar concept in OTHER products.
-        Uses semantic search on domain_concepts.
-        
+
         Args:
             target_product_code: Product to exclude
             concept: Concept to search for
             top_k: Max candidates to return (default: 3)
-        
+
         Returns:
             List of candidate section dicts (up to top_k)
         """
         log.debug(f"Querying graph for sections with concept '{concept}'")
-        
-        # Embed the concept for similarity search
+
         concept_embedding = self.embedder.embed(concept)
-        
-        # Query sections from OTHER products
+
         query = """
         MATCH (p:Product)-[:HAS_DOSSIER]->(d:DossierVersion)-[:HAS_SECTION]->(s:Section)
         WHERE p.product_code <> $target_product_code
@@ -342,44 +341,40 @@ Output JSON strictly conforming to the schema with:
                d.dossier_id AS dossier_id
         LIMIT 50
         """
-        
+
         try:
             results = self.neo4j.run_query(
                 query,
                 {"target_product_code": target_product_code}
             )
-            
+
             if not results:
                 log.debug("No sections found in other products")
                 return []
-            
-            # Filter by semantic similarity to concept
+
             candidates = []
             for section in results:
-                # Check if domain concepts semantically match
                 section_concepts_text = ", ".join(section['domain_concepts'])
                 if not section_concepts_text:
                     continue
-                
+
                 concepts_embedding = self.embedder.embed(section_concepts_text)
                 similarity = self._cosine_similarity(concept_embedding, concepts_embedding)
-                
-                # Threshold for concept relevance (relaxed to 0.5 to get more candidates)
+
                 if similarity > 0.5:
                     section['concept_similarity'] = similarity
                     candidates.append(section)
-            
-            # Sort by concept similarity and take top_k
+
             candidates.sort(key=lambda x: x['concept_similarity'], reverse=True)
             top_candidates = candidates[:top_k]
-            
+
             log.debug(f"Filtered to {len(top_candidates)} candidates with concept match")
             return top_candidates
-            
+
         except Exception as e:
             log.error(f"Failed to get candidate sections: {e}", exc_info=True)
             return []
-    
+
     def _rank_by_semantic_similarity(
         self,
         new_situation_description: str,
@@ -387,48 +382,45 @@ Output JSON strictly conforming to the schema with:
     ) -> List[Dict]:
         """
         Rank candidates by semantic similarity to new_situation.
-        
+
         Args:
             new_situation_description: Inferred new situation after changes
             candidates: Candidate sections from graph
-        
+
         Returns:
             Ranked list of candidates (best first)
         """
-        # Embed the new situation
         new_embedding = self.embedder.embed(new_situation_description)
-        
+
         scored = []
         for candidate in candidates:
             try:
                 candidate_embedding = candidate['semantic_embedding']
                 similarity = self._cosine_similarity(new_embedding, candidate_embedding)
-                
                 candidate['similarity_score'] = similarity
                 scored.append(candidate)
             except Exception as e:
                 log.warning(f"Failed to score candidate {candidate.get('section_id')}: {e}")
-        
-        # Sort by similarity descending
+
         scored.sort(key=lambda x: x['similarity_score'], reverse=True)
-        
+
         score_text = f"(score: {scored[0]['similarity_score']:.3f})" if scored else "(score: 0)"
         log.debug(
             f"Top reference: {scored[0]['section_number'] if scored else 'None'} "
             f"{score_text}"
         )
-        
+
         return scored
-    
+
     @staticmethod
     def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         """
         Calculate cosine similarity between two vectors.
-        
+
         Args:
             vec1: First vector
             vec2: Second vector
-        
+
         Returns:
             Similarity score (0.0 to 1.0)
         """
@@ -439,14 +431,14 @@ Output JSON strictly conforming to the schema with:
         except Exception as e:
             log.warning(f"Similarity calculation failed: {e}")
             return 0.0
-    
+
     def get_section_hierarchy(self, section_id: str) -> Dict:
         """
         Get hierarchical context for a section (parent, siblings).
-        
+
         Args:
             section_id: Section identifier
-        
+
         Returns:
             Hierarchy context dict
         """
@@ -465,7 +457,7 @@ Output JSON strictly conforming to the schema with:
                parent.title AS parent_title,
                collect(DISTINCT {number: sibling.section_number, title: sibling.title}) AS siblings
         """
-        
+
         try:
             result = self.neo4j.run_query(query, {"section_id": section_id})
             return result[0] if result else {}
@@ -484,20 +476,20 @@ def get_reference_finder(
 ) -> CrossDossierReferenceFinder:
     """
     Get singleton CrossDossierReferenceFinder instance.
-    
+
     Args:
         neo4j_client: Optional Neo4j client
         embedder: Optional embedder
-    
+
     Returns:
         CrossDossierReferenceFinder instance
     """
     global _finder_instance
-    
+
     if _finder_instance is None:
         _finder_instance = CrossDossierReferenceFinder(
             neo4j_client=neo4j_client,
             embedder=embedder
         )
-    
+
     return _finder_instance
