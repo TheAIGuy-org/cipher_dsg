@@ -93,8 +93,11 @@ class SectionImpactDetails(BaseModel):
 
 class SectionMappingOutput(BaseModel):
     """LLM-structured output for section mapping."""
+    reasoning_steps: List[str] = Field(
+        description="Step-by-step CoT reasoning analyzing section exclusivity, specificity, and actionability before making final selection."
+    )
     affected_sections: List[SectionImpactDetails] = Field(
-        description="List of sections that need updates with details for each"
+        description="Filtered list of ONLY the most specific, non-overlapping, and actionable sections."
     )
     overall_assessment: str = Field(
         description="Overall assessment of the change impact on the dossier"
@@ -248,58 +251,50 @@ Status: {s.get('section_status', 'existing')}
         sections_text = "\n\n".join(section_descriptions)
         
         # Build comprehensive prompt - COMPLETELY DYNAMIC
-        system_prompt = """You are an elite regulatory affairs AI with deep expertise in cosmetic product dossiers.
+        system_prompt = """You are an elite regulatory affairs AI with deep expertise in compliance dossiers.
 
 🧠 YOUR INTELLIGENCE:
 You can understand ANY dossier format, ANY regulatory framework, ANY language or structure. You analyze content semantically, not through patterns or rules.
 
 🎯 YOUR TASK:
-A change has been detected. You must:
-1. READ and UNDERSTAND the full content of every section provided
-2. SEMANTICALLY ANALYZE which sections discuss related topics, substances, or data
-3. INTELLIGENTLY DECIDE what type of update is needed
-4. EXPLAIN your reasoning clearly
+A change has been detected. You must determine the EXACT, MOST SPECIFIC section(s) to update. 
 
-⚡ DECISION FRAMEWORK:
+⚡ DECISION FRAMEWORK & GATEKEEPER RULES:
+You must apply these strict exclusivity rules before selecting any section:
 
-**STEP 1: Content Analysis**
-- Read the FULL TEXT of each section carefully
-- Look for mentions of: substances, ingredients, concentrations, limits, classifications
-- Understand the semantic meaning, not just keyword matching
-- Example: If change mentions "Toluene 80→60 ppm", find where Toluene is discussed, even if phrased differently
+**RULE 1: The Mutual Exclusivity Rule**
+Different data categories belong in strictly separate regulatory buckets. If a change belongs to a specific regulatory concept (e.g., Category A), DO NOT also flag sections describing a related but distinct concept (e.g., Category B) simply because they share a semantic theme. 
+*EXCEPTION FOR MATHEMATICAL DEPENDENCIES:* If the change involves a quantitative or numerical data point (e.g., a percentage, weight, or concentration), you MUST ALSO flag any downstream sections that explicitly contain mathematical totals, scores, or calculations that are computationally derived from the changed data points. You must determine this dynamically by reading the section text to see if it claims to calculate a total based on the modified data.
 
-**STEP 2: Update Type Decision**
-- **modify**: Data/values that exist need updating (e.g., concentration change, limit adjustment)
-- **append**: Add new related information to existing relevant section
-- **replace**: Structural or fundamental content change (rare)
-- **remove**: Delete outdated information (very rare)
+**RULE 2: The Actionability Rule (Strict Data Tracking)**
+Do not select a section merely because it discusses the topic or entities involved. You must only select a section if the RAW TEXT of that specific section actively tracks the EXACT specific metric/data point that changed. For example, if an ingredient percentage changes, but the section's table only tracks ingredient names and NOT percentages, DO NOT select it. Never attempt to add new columns, paragraphs, or metrics to a section that didn't previously track that specific type of data.
 
-**STEP 3: Decide Between Modifying Existing vs. Creating New**
-- ALWAYS prefer modifying an existing section if the topic logically fits there (e.g. updating a concentration limit).
-- HOWEVER, if the change introduces an entirely new regulatory category (e.g., a new "Heavy Metals" requirement) that is NOT adequately covered by ANY existing section in the dossier, you MUST create a new section.
-- To create a completely new section, use a logical placeholder for the section number starting with "NEW_" (e.g., "NEW_HEAVY_METALS") and provide a descriptive title.
-- Set update_type to "create" when suggesting a completely new section.
-- For value updates (X → Y), concentration changes, limit adjustments: ALWAYS modify existing section.
+**RULE 3: The Specificity Override (No Parent Containers)**
+If the dossier structure contains parent containers (e.g., '1.0 Main Topic') and specific sub-sections (e.g., '1.1 Sub-Topic'), you must ONLY return the specific sub-section where the data lives. NEVER return the broader parent structural section.
 
-**STEP 4: Priority Assessment**
-- CRITICAL: Safety, legal compliance, prohibited substances, recalls
-- HIGH: Regulatory declarations, risk assessments, major formulation changes
-- MEDIUM: Standard updates, minor reformulations
-- LOW: Clarifications, optional improvements
+**RULE 4: New Section Exclusivity**
+If you determine that the concept requires creating a completely NEW section because no existing section represents this exact regulatory bucket, you must NOT also suggest modifying vaguely related existing fallback sections.
 
-🎨 ADAPTIVE INTELLIGENCE:
-- No assumptions about format - work with what you see
-- No keyword matching - use semantic understanding
-- No rigid rules - use context and domain expertise
-- Handle any dossier structure, any regulatory framework, any language style
+**STEP 1: Reason using Chain of Thought**
+Before outputting `affected_sections`, you must populate `reasoning_steps` by concisely answering:
+- Step 1: What is the highly specific regulatory category of this change?
+- Step 2: What is the single most specific dossier section for this category? (Is it an existing subsection, or does it require a completely NEW section?)
+- Step 3: Are there any parent container sections I need to drop/exclude?
+- Step 4: Are there any conceptually related but distinctly categorized sections I need to drop/exclude? (Remember the Exception for Mathematical Dependencies cascading to calculated totals).
+
+**STEP 2: Determine Update Type**
+- ALWAYS prefer modifying an existing section if the topic logically fits there (e.g. updating a limit).
+- HOWEVER, if the change introduces an entirely new regulatory category that is NOT adequately covered by ANY existing section, use update_type "create" and invent a logical placeholder (e.g., "NEW_CATEGORY_NAME").
+- For value updates and concentration changes: ALWAYS modify the most specific existing section.
+
+**STEP 3: Priority Assessment**
+- CRITICAL: Safety, legal compliance, prohibited items
+- HIGH: Regulatory declarations, major risk assessments
+- MEDIUM: Standard property updates
+- LOW: Minor clarifications
 
 📊 OUTPUT FORMAT:
-For each affected section:
-- Section number and title
-- Priority: critical | high | medium | low
-- Update type: modify | append | replace | remove
-- Relevance score: 0.0 to 1.0 (how strongly this section relates to the change)
-- Rationale: Explain what you found in the content and why this update is needed"""
+For each VERIFIED affected section provide section number, title, priority, update type, relevance score, and rationale."""
         
         user_prompt = f"""═══════════════════════════════════════════════════════════════════════
                               CHANGE DETECTED
@@ -324,15 +319,10 @@ Confidence: {concept.confidence}
 
 1. Read and understand each section's FULL TEXT
 2. Identify which sections semantically relate to this change
-3. For each affected section, determine:
-   - Does it ALREADY contain data that needs updating? → modify
-   - Does it discuss related topics where this fits? → append
-   - Or is this completely new content? → consider new section (rare)
+3. Apply the Strict Exclusivity Gatekeeper Rules to deeply filter your selection.
 
-4. Be SELECTIVE - only return sections that genuinely need updates.
-5. If the topic is entirely new to the domain and doesn't fit existing sections, invent a new section using "NEW_X" format.
-
-Provide your analysis now."""
+You are acting as a strict semantic router.
+Provide your reasoning steps first inside `reasoning_steps`, answering the 4 logical steps, then output only the deeply filtered list of genuinely actionable sections inside `affected_sections`."""
         
         try:
             # Call LLM with structured output
@@ -345,6 +335,9 @@ Provide your analysis now."""
             )
             
             log.info(f"LLM identified {len(result.affected_sections)} affected sections")
+            log.info(f"CoT Reasoning Execution:")
+            for idx, step in enumerate(result.reasoning_steps):
+                log.info(f"  Step {idx+1}: {step}")
             log.info(f"Overall assessment: {result.overall_assessment}")
             
             # Convert to SectionImpact objects

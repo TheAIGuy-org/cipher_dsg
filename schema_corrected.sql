@@ -603,64 +603,62 @@ BEGIN
     ELSE
         SET @op = 'UPDATE';
 
-    -- Log RawMaterialID change (supplier/ingredient swap)
+    -- CRITICAL FIX: Log INCI_Name as a structural context anchor for formulation changes
+    -- The AI requires "AQUA" instead of raw integer "1" to map changes correctly.
     INSERT INTO dbo.ProductChangeLog
         (product_code, source_table, column_name, op_type, old_value, new_value)
     SELECT DISTINCT
         p.ProductCode,
         'ProductFormulations',
-        'RawMaterialID',
+        'INCI_Name',
         @op,
-        CAST(d.RawMaterialID AS NVARCHAR(50)),
-        CAST(i.RawMaterialID AS NVARCHAR(50))
+        CASE WHEN @op = 'INSERT' THEN NULL ELSE ing.INCI_Name END,
+        CASE WHEN @op = 'DELETE' THEN NULL ELSE ing.INCI_Name END
     FROM
         (SELECT FormulationID, ProductID, RawMaterialID, PercentageInProduct FROM deleted) d
         FULL OUTER JOIN
         (SELECT FormulationID, ProductID, RawMaterialID, PercentageInProduct FROM inserted) i
             ON d.FormulationID = i.FormulationID
-        JOIN dbo.Products p
-            ON p.ProductID = COALESCE(i.ProductID, d.ProductID)
-    WHERE NOT EXISTS (
+        JOIN dbo.RawMaterials rm ON rm.RawMaterialID = COALESCE(i.RawMaterialID, d.RawMaterialID)
+        JOIN dbo.Ingredients ing ON ing.IngredientID = rm.IngredientID
+        JOIN dbo.Products p ON p.ProductID = COALESCE(i.ProductID, d.ProductID)
+    WHERE (@op IN ('INSERT', 'DELETE')) OR (d.PercentageInProduct <> i.PercentageInProduct OR ISNULL(d.RawMaterialID, -1) <> ISNULL(i.RawMaterialID, -1))
+      AND NOT EXISTS (
         SELECT 1 FROM dbo.ProductChangeLog pcl
         WHERE pcl.product_code = p.ProductCode
           AND pcl.source_table = 'ProductFormulations'
-          AND pcl.column_name = 'RawMaterialID'
-          AND ISNULL(pcl.old_value, '') = ISNULL(CAST(d.RawMaterialID AS NVARCHAR(50)), '')
-          AND ISNULL(pcl.new_value, '') = ISNULL(CAST(i.RawMaterialID AS NVARCHAR(50)), '')
+          AND pcl.column_name = 'INCI_Name'
           AND pcl.status = 'pending'
           AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
     );
 
-    -- Log percentage changes separately
-    IF @op = 'UPDATE'
-    BEGIN
-        INSERT INTO dbo.ProductChangeLog
-            (product_code, source_table, column_name, op_type, old_value, new_value)
-        SELECT DISTINCT
-            p.ProductCode,
-            'ProductFormulations',
-            'PercentageInProduct',
-            'UPDATE',
-            CAST(d.PercentageInProduct AS NVARCHAR(50)),
-            CAST(i.PercentageInProduct AS NVARCHAR(50))
-        FROM
-            (SELECT FormulationID, ProductID, PercentageInProduct FROM deleted) d
-            JOIN
-            (SELECT FormulationID, ProductID, PercentageInProduct FROM inserted) i
-                ON d.FormulationID = i.FormulationID
-            JOIN dbo.Products p ON p.ProductID = i.ProductID
-        WHERE d.PercentageInProduct <> i.PercentageInProduct
-          AND NOT EXISTS (
-            SELECT 1 FROM dbo.ProductChangeLog pcl
-            WHERE pcl.product_code = p.ProductCode
-              AND pcl.source_table = 'ProductFormulations'
-              AND pcl.column_name = 'PercentageInProduct'
-              AND ISNULL(pcl.old_value, '') = CAST(d.PercentageInProduct AS NVARCHAR(50))
-              AND ISNULL(pcl.new_value, '') = CAST(i.PercentageInProduct AS NVARCHAR(50))
-              AND pcl.status = 'pending'
-              AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
-        );
-    END;
+    -- Log percentage changes separately for ALL operations (INSERT, DELETE, UPDATE)
+    INSERT INTO dbo.ProductChangeLog
+        (product_code, source_table, column_name, op_type, old_value, new_value)
+    SELECT DISTINCT
+        p.ProductCode,
+        'ProductFormulations',
+        'PercentageInProduct',
+        @op,
+        CAST(d.PercentageInProduct AS NVARCHAR(50)),
+        CAST(i.PercentageInProduct AS NVARCHAR(50))
+    FROM
+        (SELECT FormulationID, ProductID, PercentageInProduct FROM deleted) d
+        FULL OUTER JOIN
+        (SELECT FormulationID, ProductID, PercentageInProduct FROM inserted) i
+            ON d.FormulationID = i.FormulationID
+        JOIN dbo.Products p ON p.ProductID = COALESCE(i.ProductID, d.ProductID)
+    WHERE (@op IN ('INSERT', 'DELETE')) OR (d.PercentageInProduct <> i.PercentageInProduct)
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.ProductChangeLog pcl
+        WHERE pcl.product_code = p.ProductCode
+          AND pcl.source_table = 'ProductFormulations'
+          AND pcl.column_name = 'PercentageInProduct'
+          AND ISNULL(pcl.old_value, '') = ISNULL(CAST(d.PercentageInProduct AS NVARCHAR(50)), '')
+          AND ISNULL(pcl.new_value, '') = ISNULL(CAST(i.PercentageInProduct AS NVARCHAR(50)), '')
+          AND pcl.status = 'pending'
+          AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+    );
 END;
 GO
 
@@ -748,17 +746,70 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- CRITICAL FIX: Log supplier NAMES (not IDs) for LLM readability
-    -- LLM needs human-readable descriptions like "ROCHE to BASF" not "25 to 8"
+    -- CRITICAL FIX: Log the INCI_Name as a structural context anchor
+    -- This provides the AI pipeline with the exact target row (e.g. "AQUA")
+    -- so it can perform surgical tabular injections instead of dropping the change.
     INSERT INTO dbo.ProductChangeLog
         (product_code, source_table, column_name, op_type, old_value, new_value)
     SELECT DISTINCT
         p.ProductCode,
         'RawMaterials',
-        'SupplierName',  -- Changed from SupplierID for clarity
+        'INCI_Name',
         'UPDATE',
-        old_supplier.SupplierName,  -- Resolved name
-        new_supplier.SupplierName   -- Resolved name
+        ing.INCI_Name,
+        ing.INCI_Name
+    FROM inserted i
+    JOIN deleted d ON d.RawMaterialID = i.RawMaterialID
+    JOIN dbo.Ingredients ing ON ing.IngredientID = i.IngredientID
+    JOIN dbo.ProductFormulations pf ON pf.RawMaterialID = i.RawMaterialID
+    JOIN dbo.Products p ON p.ProductID = pf.ProductID
+    WHERE d.SupplierID <> i.SupplierID OR d.NaturalOriginIndex <> i.NaturalOriginIndex OR d.CommercialName <> i.CommercialName
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.ProductChangeLog pcl
+        WHERE pcl.product_code = p.ProductCode
+          AND pcl.source_table = 'RawMaterials'
+          AND pcl.column_name = 'INCI_Name'
+          AND pcl.status = 'pending'
+          AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+    );
+
+    -- Log CommercialName explicitly, as it ripples into formulations and allergens.
+    INSERT INTO dbo.ProductChangeLog
+        (product_code, source_table, column_name, op_type, old_value, new_value)
+    SELECT DISTINCT
+        p.ProductCode,
+        'RawMaterials',
+        'CommercialName',
+        'UPDATE',
+        d.CommercialName,
+        i.CommercialName
+    FROM inserted i
+    JOIN deleted d ON d.RawMaterialID = i.RawMaterialID
+    JOIN dbo.ProductFormulations pf ON pf.RawMaterialID = i.RawMaterialID
+    JOIN dbo.Products p ON p.ProductID = pf.ProductID
+    WHERE ISNULL(d.CommercialName, '') <> ISNULL(i.CommercialName, '')
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.ProductChangeLog pcl
+        WHERE pcl.product_code = p.ProductCode
+          AND pcl.source_table = 'RawMaterials'
+          AND pcl.column_name = 'CommercialName'
+          AND ISNULL(pcl.old_value, '') = ISNULL(d.CommercialName, '')
+          AND ISNULL(pcl.new_value, '') = ISNULL(i.CommercialName, '')
+          AND pcl.status = 'pending'
+          AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+    );
+
+    -- Log supplier NAMES (not IDs) for LLM readability
+    -- LLM needs human-readable descriptions like "ROCHE to BASF"
+    INSERT INTO dbo.ProductChangeLog
+        (product_code, source_table, column_name, op_type, old_value, new_value)
+    SELECT DISTINCT
+        p.ProductCode,
+        'RawMaterials',
+        'SupplierName',  
+        'UPDATE',
+        old_supplier.SupplierName,  
+        new_supplier.SupplierName   
     FROM inserted i
     JOIN deleted d ON d.RawMaterialID = i.RawMaterialID
     JOIN dbo.Suppliers old_supplier ON old_supplier.SupplierID = d.SupplierID
@@ -773,6 +824,32 @@ BEGIN
           AND pcl.column_name = 'SupplierName'
           AND ISNULL(pcl.old_value, '') = ISNULL(old_supplier.SupplierName, '')
           AND ISNULL(pcl.new_value, '') = ISNULL(new_supplier.SupplierName, '')
+          AND pcl.status = 'pending'
+          AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
+    );
+
+    -- Log NaturalOriginIndex changes for the Mathematical Interceptor
+    INSERT INTO dbo.ProductChangeLog
+        (product_code, source_table, column_name, op_type, old_value, new_value)
+    SELECT DISTINCT
+        p.ProductCode,
+        'RawMaterials',
+        'NaturalOriginIndex',  
+        'UPDATE',
+        CAST(d.NaturalOriginIndex AS NVARCHAR(50)),  
+        CAST(i.NaturalOriginIndex AS NVARCHAR(50))   
+    FROM inserted i
+    JOIN deleted d ON d.RawMaterialID = i.RawMaterialID
+    JOIN dbo.ProductFormulations pf ON pf.RawMaterialID = i.RawMaterialID
+    JOIN dbo.Products p ON p.ProductID = pf.ProductID
+    WHERE d.NaturalOriginIndex <> i.NaturalOriginIndex
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.ProductChangeLog pcl
+        WHERE pcl.product_code = p.ProductCode
+          AND pcl.source_table = 'RawMaterials'
+          AND pcl.column_name = 'NaturalOriginIndex'
+          AND ISNULL(pcl.old_value, '') = CAST(d.NaturalOriginIndex AS NVARCHAR(50))
+          AND ISNULL(pcl.new_value, '') = CAST(i.NaturalOriginIndex AS NVARCHAR(50))
           AND pcl.status = 'pending'
           AND DATEDIFF(SECOND, pcl.changed_at, SYSUTCDATETIME()) < 2
     );

@@ -331,43 +331,51 @@ class ChangeDetectionPipeline:
                             )
                         update_plans.extend(existing_plans)
             
-            # Combine all plans
+            # COMBINE AND RETURN PLANS
             if not update_plans:
                 log.warning("  ⚠️  No update plans generated")
                 return []
             
-            # CONSOLIDATE if we have NEW_PATTERN sections needing hierarchy placement
-            # Even a SINGLE new section may need renumbering of existing sections
-            new_pattern_plans = [p for p in update_plans if p.pattern_change_type == "NEW_PATTERN"]
+            # --- NATURAL ORIGIN MATHEMATICAL INTERCEPTOR ---
+            for plan in update_plans:
+                is_natural_origin = False
+                if "natural origin" in plan.title.lower():
+                    is_natural_origin = True
+                else:
+                    for cc in plan.concept_changes:
+                        if "natural origin" in cc.concept.lower() or "natural origin" in cc.description.lower():
+                            is_natural_origin = True
+                            break
+                            
+                if is_natural_origin:
+                    log.info(f"  🧮 Intercepting Natural Origin update for math recalculation on {product_code}...")
+                    calc_total = self.sql_client.calculate_natural_origin_percentage(product_code)
+                    if calc_total is not None:
+                        math_override = ConceptChangeOutput(
+                            concept="mathematical recalculation override",
+                            change_type="system forced calculation",
+                            description=f"CRITICAL OVERRIDE: The finalized total Natural Origin percentage for this product has been structurally recalculated by the database. Locate the final total percentage string at the bottom of the section/table and update it to exactly: {calc_total}%",
+                            affected_entity="Final Total Natural Origin Percentage",
+                            confidence="high"
+                        )
+                        plan.concept_changes.append(math_override)
+                        log.info(f"  ✅ Injected exact Mathematical Total: {calc_total}% into LLM instructions.")
+            # -----------------------------------------------
             
-            if len(new_pattern_plans) >= 1:
-                # New section(s) detected - need to check if hierarchy placement required
-                consolidated_plan = self._consolidate_plans(update_plans, product_code, concept_changes)
-                
-                if consolidated_plan:
-                    log.info(f"\n🎯 CONSOLIDATED INTO PLAN WITH HIERARCHY PLACEMENT:")
-                    log.info(f"   Section: {consolidated_plan.section_number} - {consolidated_plan.title}")
-                    if hasattr(consolidated_plan, '__dict__') and 'renumbering_required' in consolidated_plan.__dict__:
-                        renumbering = consolidated_plan.__dict__['renumbering_required']
-                        if renumbering:
-                            log.info(f"   Renumbering: {renumbering}")
-                    log.info(f"   Status: {consolidated_plan.status}")
-                    
-                    # Return both consolidated new section AND any SAME_PATTERN updates
-                    result_plans = [consolidated_plan]
-                    same_pattern_plans = [p for p in update_plans if p.pattern_change_type == "SAME_PATTERN"]
-                    result_plans.extend(same_pattern_plans)
-                    
-                    return result_plans
-            
-            # Return individual plans (no new sections needing hierarchy placement)
             log.info(f"\n✅ Generated {len(update_plans)} independent update plans:")
             for plan in update_plans:
+                # Log any dynamically calculated hierarchy cascades
+                renumber_map_str = ""
+                if hasattr(plan, 'sibling_sections') and plan.sibling_sections:
+                    renumbering_map = {sib['old']: sib['new'] for sib in plan.sibling_sections if isinstance(sib, dict) and 'old' in sib and 'new' in sib}
+                    if renumbering_map:
+                        renumber_map_str = f" [CASCADE RENUMBERING ACTIVE: {renumbering_map}]"
+                
                 log.info(
                     f"     - {plan.section_number}: "
                     f"{plan.pattern_change_type} / "
                     f"{plan.reference_source} / "
-                    f"{plan.status}"
+                    f"{plan.status}{renumber_map_str}"
                 )
             
             # Summary
@@ -456,92 +464,6 @@ class ChangeDetectionPipeline:
             return '.'.join(parts[:-1])
         return ""
     
-    def _consolidate_plans(
-        self,
-        plans: List[SectionUpdatePlan],
-        product_code: str,
-        concept_changes: List[ConceptChangeOutput]
-    ) -> Optional[SectionUpdatePlan]:
-        """
-        Consolidate multiple plans into ONE unified plan with correct hierarchy.
-        
-        This handles the case where:
-        - A new section needs to be created (e.g., 2.2.2.2 Heavy Metals)
-        - Existing sections need to be renumbered (e.g., 2.2.2.2 CMR → 2.2.2.3)
-        - Multiple sections are affected
-        
-        Returns a single plan with the PRIMARY new section and renumbering instructions.
-        
-        Args:
-            plans: List of generated plans
-            product_code: Target product
-            concept_changes: Original concept changes
-        
-        Returns:
-            Single consolidated SectionUpdatePlan or None
-        """
-        if not plans:
-            return None
-        
-        # Identify new sections (completely new, not just new format)
-        new_section_plans = [
-            p for p in plans 
-            if p.pattern_change_type == "NEW_PATTERN" 
-            and "does not exist yet" in str(p.old_semantic_description)
-        ]
-        
-        if not new_section_plans:
-            # No new sections - just return best existing plan
-            return plans[0] if plans else None
-        
-        # Take the first new section plan as PRIMARY
-        primary_plan = new_section_plans[0]
-        
-        log.info(f"\n🔧 CONSOLIDATING {len(plans)} plans into 1 unified output...")
-        log.info(f"   Primary new section: {primary_plan.section_number} - {primary_plan.title}")
-        
-        # Trust the LLM's dynamic placement logic entirely - no hardcoded rules
-        renumbering_map = {}
-        if hasattr(primary_plan, 'sibling_sections') and isinstance(primary_plan.sibling_sections, list):
-            # Only extract dicts that have 'old' and 'new' keys (from placement logic)
-            renumbering_map = {sib['old']: sib['new'] for sib in primary_plan.sibling_sections if isinstance(sib, dict) and 'old' in sib and 'new' in sib}
-        
-        if renumbering_map:
-            log.info(f"   Renumbering required (decided by LLM):")
-            for old, new in renumbering_map.items():
-                log.info(f"     {old} → {new}")
-        
-        # Create consolidated plan based entirely on primary_plan logic
-        consolidated = SectionUpdatePlan(
-            section_id=primary_plan.section_id,
-            section_number=primary_plan.section_number,
-            title=primary_plan.title,
-            product_code=product_code,
-            dossier_id=primary_plan.dossier_id,
-            status=primary_plan.status,
-            pattern_change_type=primary_plan.pattern_change_type,
-            pattern_reasoning=f"NEW SECTION at {primary_plan.section_number}: {primary_plan.title}. " +
-                            f"Using {primary_plan.reference_product_code} section {primary_plan.reference_section_number} as template. " +
-                            (f"Requires renumbering: {renumbering_map}" if renumbering_map else "No renumbering needed."),
-            old_semantic_description=primary_plan.old_semantic_description,
-            new_semantic_description=primary_plan.new_semantic_description,
-            reference_source=primary_plan.reference_source,
-            reference_section_id=primary_plan.reference_section_id,
-            reference_product_code=primary_plan.reference_product_code,
-            reference_section_number=primary_plan.reference_section_number,
-            reference_full_text=primary_plan.reference_full_text,
-            reference_content_format=primary_plan.reference_content_format,
-            parent_section_number=primary_plan.parent_section_number,
-            sibling_sections=primary_plan.sibling_sections,
-            concept_changes=concept_changes,  # Include ALL concept changes
-            overall_confidence=primary_plan.overall_confidence
-        )
-        
-        # Add renumbering info as custom attribute (not in Pydantic model, but accessible)
-        consolidated.__dict__['renumbering_required'] = renumbering_map if renumbering_map else None
-        
-        return consolidated
-
 
 # Singleton
 _pipeline_instance: Optional[ChangeDetectionPipeline] = None

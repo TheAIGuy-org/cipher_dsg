@@ -100,6 +100,15 @@ class ChangeInterpreter:
         
         concepts = []
         
+        # Pre-fetch the Live Enriched Context Views for this Product!
+        enriched_contexts = {}
+        if self.sql_client:
+            log.info("Fetching unified context arrays from SQL Views for semantic enrichment...")
+            enriched_contexts['vw_Context_ReferenceFormula'] = str(self.sql_client.fetch_context_view('vw_Context_ReferenceFormula', bundle.product_code))
+            enriched_contexts['vw_Context_Allergens'] = str(self.sql_client.fetch_context_view('vw_Context_Allergens', bundle.product_code))
+            enriched_contexts['vw_Context_CMR'] = str(self.sql_client.fetch_context_view('vw_Context_CMR', bundle.product_code))
+            enriched_contexts['vw_Context_NaturalOrigin'] = str(self.sql_client.fetch_context_view('vw_Context_NaturalOrigin', bundle.product_code))
+        
         for group_idx, (group_key, group_changes) in enumerate(change_groups.items()):
             try:
                 # Build related changes context (from OTHER groups)
@@ -111,7 +120,8 @@ class ChangeInterpreter:
                 # Interpret group of related changes as one OR MORE concepts
                 concept_list_output = self.interpret_change_group(
                     changes=group_changes,
-                    related_changes=related_changes
+                    related_changes=related_changes,
+                    enriched_contexts=enriched_contexts
                 )
                 
                 concepts.extend(concept_list_output)
@@ -281,7 +291,8 @@ class ChangeInterpreter:
     def interpret_change_group(
         self,
         changes: List[DBChangeRecord],
-        related_changes: Optional[str] = None
+        related_changes: Optional[str] = None,
+        enriched_contexts: Optional[Dict[str, str]] = None
     ) -> List[ConceptChangeOutput]:
         """
         Interpret a GROUP of related changes as one or more regulatory concepts.
@@ -321,10 +332,15 @@ class ChangeInterpreter:
             for c in column_changes
         ])
         
+        # Build extracted contexts string if provided
+        context_str = "None provided."
+        if enriched_contexts:
+            context_str = "\n\n".join([f"--- Context View: {k} ---\n{v}" for k, v in enriched_contexts.items() if v and v != "[]"])
+
         # Build prompt
         system_prompt = get_prompt('change_interpretation', 'system')
         
-        # Enhanced user prompt with ALL columns
+        # Enhanced user prompt with ALL columns and Enriched Contexts + CoT
         user_prompt = f"""
 DATABASE CHANGE DETECTED:
 
@@ -341,18 +357,26 @@ TABLE SCHEMA:
 RELATED CHANGES IN THIS BUNDLE:
 {related_changes or 'None (single change group)'}
 
-CRITICAL INSTRUCTION:
-Look at ALL column values together. 
-- If the changes belong to the EXACT SAME entity/row (e.g., adding a single Heavy Metal and setting its concentration), group them into a SINGLE concept.
-- If the changes represent MULTIPLE DIFFERENT entities/rows (e.g., updating limits for two completely different Trace substances like Dichloromethane AND Dihexylphthalate), you MUST extract MULTIPLE distinct concepts and return them all in the list! Do not merge distinct physical entities into one concept.
+CURRENT DOSSIER CONTEXT (Live SQL Data):
+{context_str}
 
-Use the Classification/Type columns to identify SPECIFIC regulatory concepts:
-- If Classification contains "Heavy Metal" → concept should be "heavy metal content"
-- If Classification contains "CMR" → concept should be "CMR substance presence"  
-- If Classification contains "Allergen" → concept should be "allergen declaration"
-- Use the MOST SPECIFIC concept that applies!
+CRITICAL ENFORCEMENT RULES:
+1. ENTITY BINDING: Look at ALL column values together. If the columns belong to the EXACT SAME physical entity/row, group them into a SINGLE concept.
+2. MULTI-ENTITY SEPARATION: If the database operation simultaneously affected MULTIPLE DISTINCT entities, extract a distinct concept for EACH unique entity.
+3. DEDUPLICATION MANDATE: You are strictly forbidden from outputting duplicate or redundant concepts.
+4. PRESERVE EXACT VALUES & CASCADING IMPACTS: 
+   - Your `description` field MUST contain the exact quantitative or textual boundaries that changed (e.g., "AQUA percentage decreased from 67.54 to 65.04").
+   - VERY IMPORTANT: Use the 'CURRENT DOSSIER CONTEXT' to identify cross-table impacts! If a Raw Material's CommercialName changed, look at the Context Views. Does that Raw Material contain Allergens? If so, you MUST output an additional concept for "allergen declaration" because the name change ripples into the allergen section! Does it contain CMRs? If so, output "CMR substance presence".
+   - If a Raw Material NaturalOriginIndex changed, output "natural origin measurement", AND if it is part of a formula, output "formulation composition" too.
 
-Extract all distinct regulatory concepts that these changes represent into the items array.
+Taxonomy mapping to use for concept strings:
+- "heavy metal content" (for Traces)
+- "CMR substance presence" (for Traces/CMRs)
+- "allergen declaration" (for Allergens)
+- "formulation composition" (for Formula Composition, RawMaterials CommercialName/Supplier/INCI, or any baseline product change)
+- "natural origin measurement" (for NaturalOriginIndex or Formulation Percentages)
+
+Output the strict, deduplicated array of regulatory concepts.
 """
         # Call LLM with structured output
         try:

@@ -263,6 +263,75 @@ class SQLServerClient:
             log.error(f"Unexpected error fetching pending changes: {e}")
             return []
     
+    def calculate_natural_origin_percentage(self, product_code: str) -> Optional[float]:
+        """
+        Calculate the exact total Natural Origin percentage for a given product structurally.
+        This provides deterministic math, bypassing the LLM's inability to calculate floating-point sums.
+        
+        Formula: SUM(PercentageInProduct * NaturalOriginIndex)
+        
+        Args:
+            product_code: ProductCode of the formulation
+            
+        Returns:
+            The calculated float, or None if the query fails.
+        """
+        query = """
+        SELECT SUM(pf.PercentageInProduct * CAST(rm.NaturalOriginIndex AS DECIMAL(10,5))) AS TotalNO
+        FROM dbo.ProductFormulations pf
+        JOIN dbo.RawMaterials rm ON pf.RawMaterialID = rm.RawMaterialID
+        JOIN dbo.Products p ON p.ProductID = pf.ProductID
+        WHERE p.ProductCode = ?
+        """
+        
+        try:
+            if not self.is_connected():
+                self.connect()
+                
+            cursor = self.connection.cursor()
+            cursor.execute(query, (product_code,))
+            row = cursor.fetchone()
+            
+            if row and row[0] is not None:
+                total_percentage = float(row[0])
+                log.info(f"Database computed Natural Origin for {product_code}: {total_percentage:.4f}%")
+                return round(total_percentage, 5)
+            
+            log.warning(f"No formulation found for product code: {product_code}")
+            return None
+            
+        except pyodbc.Error as e:
+            log.error(f"Failed to calculate Natural Origin for {product_code}: {e}")
+            return None
+        except Exception as e:
+            log.error(f"Unexpected error calculating Natural Origin: {e}")
+            return None
+            
+    def fetch_context_view(self, view_name: str, product_code: str) -> List[Dict[str, Any]]:
+        """
+        Dynamically fetch the fully-joined JSON context array from a targeted Context View.
+        This provides the AI with relational, explicitly scoped dossier truth.
+        """
+        query = f"SELECT * FROM dbo.{view_name} WHERE ProductCode = ?"
+        try:
+            if not self.is_connected():
+                self.connect()
+
+            cursor = self.connection.cursor()
+            cursor.execute(query, (product_code,))
+            
+            columns = [column[0] for column in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            cursor.close()
+            return results
+        except pyodbc.Error as e:
+            log.error(f"Failed to fetch context view {view_name} for {product_code}: {e}")
+            return []
+        except Exception as e:
+            log.error(f"Unexpected error fetching context view {view_name}: {e}")
+            return []
+    
     def mark_change_processed(self, change_log_id: int) -> bool:
         """
         Mark a change as processed in ProductChangeLog.
