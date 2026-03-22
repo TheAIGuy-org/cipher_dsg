@@ -367,7 +367,7 @@ CRITICAL ENFORCEMENT RULES:
 4. PRESERVE EXACT VALUES & CASCADING IMPACTS: 
    - Your `description` field MUST contain the exact quantitative or textual boundaries that changed (e.g., "AQUA percentage decreased from 67.54 to 65.04").
    - VERY IMPORTANT: Use the 'CURRENT DOSSIER CONTEXT' to identify cross-table impacts! If a Raw Material's CommercialName changed, look at the Context Views. Does that Raw Material contain Allergens? If so, you MUST output an additional concept for "allergen declaration" because the name change ripples into the allergen section! Does it contain CMRs? If so, output "CMR substance presence".
-   - If a Raw Material NaturalOriginIndex changed, output "natural origin measurement", AND if it is part of a formula, output "formulation composition" too.
+   - If a ProductFormulation PercentageInProduct changes/is inserted, OR a RawMaterial NaturalOriginIndex changes, you MUST output BOTH "formulation composition" AND "natural origin measurement". Why? Because altering the formula mass ALWAYS alters the downstream natural origin mathematical total!
 
 Taxonomy mapping to use for concept strings:
 - "heavy metal content" (for Traces)

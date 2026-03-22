@@ -47,12 +47,12 @@ JOIN dbo.Products p ON pf.ProductID = p.ProductID;
 GO
 
 -- ── Context View: Natural Origin (2.2.7) ────────────────────────────────────
--- Outputs: Product Percentage, Natural Origin Index, Ingredient Trade Name, Supplier
+-- Outputs: Product Percentage, Natural Origin Index, Ingredient, Trade Name, Manufacturer/Supplier
 CREATE OR ALTER VIEW dbo.vw_Context_NaturalOrigin AS
 SELECT DISTINCT
     pf.ProductID,
     p.ProductCode,
-    ing.INCI_Name AS [Ingredient Name],
+    ing.INCI_Name AS [Ingredient],
     rm.CommercialName AS [Trade Name],
     s.SupplierName AS [Manufacturer/Supplier],
     pf.PercentageInProduct AS [Product Percentage],
