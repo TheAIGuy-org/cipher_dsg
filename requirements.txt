@@ -1,20 +1,35 @@
-# Core runtime
+# ─── Neo4j ────────────────────────────────────────────────
 neo4j==5.18.0
+ 
+# ─── PDF processing ───────────────────────────────────────
 pdfplumber==0.10.3
+pymupdf
+ 
+# ─── Markdown + PDF rendering ─────────────────────────────
+markdown
+playwright
+ 
+# ─── Environment + config ─────────────────────────────────
 python-dotenv==1.0.1
-
-# LangGraph for workflow orchestration
+ 
+# ─── LangGraph workflow orchestration ─────────────────────
 langgraph
 langchain-core
 langchain-openai
-
-# Pydantic v2 for structured outputs
+ 
+# ─── Pydantic v2 ──────────────────────────────────────────
 pydantic
-
-# Database connectivity
+ 
+# ─── Database connectivity ────────────────────────────────
 pyodbc
-
-# Required for EMBEDDING_BACKEND=openai (set in .env before agent phase)
-# Switch from local hash embeddings to real semantic vectors before any
-# LangGraph agent work — see README section "Switching to Real Embeddings"
+ 
+# ─── OpenAI / Azure OpenAI ────────────────────────────────
 openai>=1.0.0
+ 
+# ─── Numpy (used in reference_finder cosine similarity) ───
+numpy
+
+# ─── FastAPI + WebSockets for real-time communication ─────
+fastapi
+uvicorn
+websockets
