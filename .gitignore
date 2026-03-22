@@ -1,6 +1,4 @@
-# Git ignore file for Cipher DSG project
-
-# Python
+# ─── Python ───────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,35 +9,42 @@ dist/
 build/
 *.egg
 
-# Virtual environment
+# ─── Virtual environments ─────────────────────────────────
 venv/
 env/
 ENV/
+llm_env/
+.venv/
 
-# IDE
+# ─── IDE ──────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Environment variables (contains credentials)
+# ─── Credentials — NEVER commit these ────────────────────
 .env
+*.env
 
-# Logs
+# ─── Logs ─────────────────────────────────────────────────
 logs/
 *.log
 
-# Data files
+# ─── Data folder (PDFs, source dossiers) ──────────────────
 data/
 
-# Neo4j local data (if using desktop)
+# ─── Dossier gen engine outputs ───────────────────────────
+dossier_gen_engine/data/
+
+# ─── Neo4j local ──────────────────────────────────────────
 neo4j-data/
 
-# OS
+# ─── OS ───────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Temporary files
+# ─── Temp ─────────────────────────────────────────────────
 *.tmp
 *.bak
+code_dump.txt
