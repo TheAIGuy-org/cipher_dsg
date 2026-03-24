@@ -27,7 +27,7 @@ class Settings:
     # "local" → deterministic hash-based vectors (works offline, no API key)
     # "openai" → text-embedding-3-small via OpenAI API
     EMBEDDING_BACKEND: str = os.environ.get("EMBEDDING_BACKEND", "local")
-    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+    AZURE_OPENAI_KEY: str = os.environ.get("AZURE_OPENAI_KEY", "")
  
     # Embedding dimension:
     # local → 384 (to match common SentenceTransformer dim for future swap)

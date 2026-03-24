@@ -18,3 +18,8 @@ pyodbc
 # Switch from local hash embeddings to real semantic vectors before any
 # LangGraph agent work — see README section "Switching to Real Embeddings"
 openai>=1.0.0
+
+# ─── FastAPI + WebSockets for real-time communication ─────
+fastapi
+uvicorn
+websockets

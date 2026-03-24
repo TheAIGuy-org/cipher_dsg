@@ -153,7 +153,7 @@ def _load_section(
     )
     
     log.debug(f"  ✓ Section {section.section_number}: {section.title} "
-              f"({"with" if not skip_embeddings else "without"} embedding)")
+              f"({'with' if not skip_embeddings else 'without'} embedding)")
 
 
 def _load_parent_edges(dossier: ParsedDossier, client: Neo4jClient) -> None:

@@ -37,7 +37,7 @@ class DossierManifest:
 # ── Registry ────────────────────────────────────────────────────────────────
 DOSSIER_REGISTRY: list[DossierManifest] = [
     DossierManifest(
-        pdf_filename="face_day_cream_1614322.pdf",
+        pdf_filename="1614322.pdf",
         product_id=1,
         product_code="1614322",
         product_name="BEPANTHOL Face Day Cream",
@@ -50,7 +50,7 @@ DOSSIER_REGISTRY: list[DossierManifest] = [
         ],
     ),
     DossierManifest(
-        pdf_filename="lipstick_1614557.pdf",
+        pdf_filename="1614557.pdf",
         product_id=2,
         product_code="1614557",
         product_name="BEPANTHOL Lipstick",
@@ -63,7 +63,7 @@ DOSSIER_REGISTRY: list[DossierManifest] = [
         ],
     ),
     DossierManifest(
-        pdf_filename="cream_1600188.pdf",
+        pdf_filename="1600188.pdf",
         product_id=3,
         product_code="1600188",
         product_name="BEPANTHOL Cream",

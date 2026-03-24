@@ -27,7 +27,7 @@ _ESCAPE_MAP = {
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _get_pdf_path(product_code: str) -> Path:
-    matches = list(settings.DOSSIER_DIR.glob(f"*_{product_code}.pdf"))
+    matches = list(settings.DOSSIER_DIR.glob(f"*{product_code}*.pdf"))
     if not matches:
         raise FileNotFoundError(f"No PDF found for product_code='{product_code}'")
     if len(matches) > 1:
@@ -477,6 +477,6 @@ def run_prompt(approved_contents: list[dict]) -> PromptOutput:
 
     # ── Save ──────────────────────────────────────────────────────────────────
     full_output = PromptOutput(elements=all_elements)
-    struct_to_docx({"elements": full_output.elements}, pdf_path.stem)
+    struct_to_docx({"elements": full_output.elements}, pdf_path.stem,product_code)
     print(f"\n✅ All changes applied. DOCX saved.")
     return full_output

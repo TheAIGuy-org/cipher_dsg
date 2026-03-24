@@ -1,0 +1,69 @@
+/* static/style.css */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+body {
+    font-family: 'Inter', sans-serif;
+    /* Subtle technical grid background */
+    background-color: #020617; /* slate-950 */
+    background-image: 
+        linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+}
+
+.font-mono {
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* --- Glassmorphism Utilities --- */
+.glass-panel {
+    background: rgba(15, 23, 42, 0.6); /* slate-900 */
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+}
+
+/* --- Animations & Glows --- */
+.glow-cyan {
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.5), inset 0 0 10px rgba(6, 182, 212, 0.2);
+    border-color: rgba(6, 182, 212, 0.5) !important;
+}
+
+.text-glow {
+    text-shadow: 0 0 10px currentColor;
+}
+
+.radar-sweep {
+    position: relative;
+    overflow: hidden;
+}
+.radar-sweep::after {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%; width: 200%; height: 200%;
+    background: conic-gradient(transparent, rgba(16, 185, 129, 0.1), transparent 40deg);
+    animation: spin 4s linear infinite;
+}
+@keyframes spin { 100% { transform: rotate(360deg); } }
+
+/* --- Terminal Console Typing Effect --- */
+.console-line {
+    animation: fadeUp 0.3s ease-out forwards;
+    opacity: 0;
+    transform: translateY(5px);
+}
+@keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* --- Custom Dark Scrollbars --- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(51, 65, 85, 0.8); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(71, 85, 105, 1); }
+
+/* --- Review View Text Selection --- */
+#rev-new::selection { background: rgba(16, 185, 129, 0.3); color: #6ee7b7; }
+#rev-section-name::selection { background: rgba(6, 182, 212, 0.3); color: #67e8f9; }
+#rev-reasoning::selection { background: rgba(6, 182, 212, 0.2); color: #a5f3fc; }

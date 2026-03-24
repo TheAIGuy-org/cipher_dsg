@@ -12,7 +12,7 @@ from openpyxl import load_workbook
 
 from config.settings import settings
 
-OUTPUT_DIR = settings.PROJECT_ROOT / "output"
+OUTPUT_DIR = settings.PROJECT_ROOT / "data/docx_output"
 
 # Bullet characters detected everywhere in the document
 _BULLET_RE = r"[•‣◦⁃\-]"
@@ -128,7 +128,7 @@ def _add_toc_line(doc: Document, label: str, page_num: str) -> None:
     p.add_run(page_num)
 
 
-def struct_to_docx(struct_dict: dict[str, Any], product_code: str) -> Path:
+def struct_to_docx(struct_dict: dict[str, Any],path:str, product_code: str) -> Path:
     """
     Convert a struct elements list into a Word document saved to the output folder.
 
@@ -141,21 +141,21 @@ def struct_to_docx(struct_dict: dict[str, Any], product_code: str) -> Path:
 
     Args:
         struct_dict:  Dict with an "elements" key containing the full element list.
-        product_code: PDF filename stem used to locate extracted table xlsx files
+        path: PDF filename stem used to locate extracted table xlsx files
                       (e.g. "face_day_cream_1614322").
 
     Returns:
-        Path to the saved .docx file in output/<product_code>_<timestamp>.docx.
+        Path to the saved .docx file in output/<path>_<timestamp>.docx.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    _matches = list(settings.DOSSIER_DIR.glob(f"*_{product_code}.pdf"))
+    _matches = list(settings.DOSSIER_DIR.glob(f"*_{path}.pdf"))
     if _matches:
         extracted_dir = settings.PROJECT_ROOT / "data" / "extracted" / _matches[0].stem
     else:
         extracted_dir = next(
-            (settings.PROJECT_ROOT / "data" / "extracted").glob(f"*{product_code}*"),
-            settings.PROJECT_ROOT / "data" / "extracted" / product_code,
+            (settings.PROJECT_ROOT / "data" / "extracted").glob(f"*{path}*"),
+            settings.PROJECT_ROOT / "data" / "extracted" / path,
         )
 
     doc             = Document()
@@ -321,7 +321,7 @@ def struct_to_docx(struct_dict: dict[str, Any], product_code: str) -> Path:
                 last_was_bullet = False
 
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = OUTPUT_DIR / f"{product_code}_{ts}.docx"
+    out_path = OUTPUT_DIR / f"{product_code}.docx"
     doc.save(out_path)
     print(f"\n✅ DOCX saved: {out_path}")
     return out_path
