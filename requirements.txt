@@ -23,3 +23,8 @@ openai>=1.0.0
 fastapi
 uvicorn
 websockets
+
+#Updater requirements
+python-docx==1.2.0
+openpyxl==3.1.5
+requests==2.32.5
