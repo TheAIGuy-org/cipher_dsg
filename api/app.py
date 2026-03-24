@@ -409,7 +409,7 @@ async def autonomous_agent_loop():
 
                             "run_id": run_id,
 
-                            "state":  "COMPILING_PDF",
+                            "state":  "COMPILING_DOCX",
 
                         })
  

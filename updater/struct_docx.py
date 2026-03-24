@@ -319,7 +319,7 @@ def struct_to_docx(struct_dict: dict[str, Any],path:str, product_code: str) -> P
                 last_was_bullet = False
 
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = OUTPUT_DIR / f"{product_code}.docx"
+    out_path = OUTPUT_DIR / f"{product_code}_updated.docx"
     doc.save(out_path)
     print(f"\n✅ DOCX saved: {out_path}")
     return out_path

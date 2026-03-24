@@ -253,6 +253,7 @@ function handleAgentEvent(data) {
         if (data.docx_url) {
 
             downloadBtn.href = data.docx_url;
+            downloadBtn.setAttribute('download', `${data.product_code}_updated.docx`);
 
             downloadBtn.innerHTML = `
 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
