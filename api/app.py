@@ -81,7 +81,11 @@ async def serve_ui():
 @app.get("/api/v1/dossiers")
 async def get_dossiers():
     """Return available dossiers for View 1."""
-    return [{"product_code": d.product_code, "name": d.product_name} for d in DOSSIER_REGISTRY]
+    return [{
+        "product_code": d.product_code, 
+        "name": d.product_name,
+        "pdf_url": f"/dossiers/{d.pdf_filename}"  # <-- ADDED
+    } for d in DOSSIER_REGISTRY]
 
 @app.post("/api/v1/workflow/review")
 async def submit_review(decision: ReviewDecision):

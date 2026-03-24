@@ -1,5 +1,7 @@
 // static/app.js
 let currentRunId = null;
+let globalDossiers = []; // Store dossiers globally for dock switching
+let logLines = [];       // Rolling terminal array
 
 const views = {
     idle: document.getElementById('view-idle'),
@@ -14,11 +16,8 @@ const coreDot = document.getElementById('core-status-dot');
 const corePing = document.getElementById('core-status-ping');
 
 // --- Initialization ---
-// --- Initialization (Robust Version) ---
 async function init() {
     const grid = document.getElementById('dossier-grid');
-    
-    // 1. Show a loading state so the UI isn't blank while fetching
     grid.innerHTML = `
         <div class="col-span-full flex flex-col items-center justify-center p-10 text-cyan-500/50">
             <div class="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4"></div>
@@ -27,23 +26,20 @@ async function init() {
     `;
 
     try {
-        // 2. Fetch data from FastAPI
         const res = await fetch('/api/v1/dossiers');
-        
         if (!res.ok) throw new Error(`API returned status: ${res.status}`);
         
-        const dossiers = await res.json();
-        grid.innerHTML = ''; // Clear loading state
+        globalDossiers = await res.json();
+        grid.innerHTML = ''; 
         
-        if (dossiers.length === 0) {
+        if (globalDossiers.length === 0) {
             grid.innerHTML = `<div class="col-span-full text-slate-500 font-mono text-sm">No dossiers found in registry.</div>`;
             return;
         }
 
-        // 3. Render the Dossier Cards (Dark Mode Design)
-        dossiers.forEach(d => {
+        globalDossiers.forEach(d => {
             grid.innerHTML += `
-                <div class="glass-panel p-6 rounded-xl hover:bg-slate-800/50 transition-colors border-l-2 border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
+                <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-6 rounded-xl hover:bg-slate-800/80 transition-all duration-300 border-l-2 border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
                     <div class="absolute inset-0 bg-gradient-to-r from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                     <div class="relative z-10">
                         <div class="flex justify-between items-start mb-2">
@@ -60,7 +56,6 @@ async function init() {
             `;
         });
 
-        // 4. Connect WebSocket only AFTER data is loaded
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/stream`);
         
@@ -74,7 +69,6 @@ async function init() {
         };
 
     } catch (error) {
-        // 5. If fetch fails (e.g. running via file://), show a clear error
         console.error("Failed to load dossiers:", error);
         grid.innerHTML = `
             <div class="col-span-full glass-panel border-rose-500/30 p-6 rounded-xl text-rose-400 font-mono text-sm flex flex-col items-center text-center">
@@ -86,12 +80,72 @@ async function init() {
     }
 }
 
+// --- Dossier Display Animations ---
+function openDossierPreview(id) {
+    const grid = document.getElementById('dossier-grid');
+    const previewContainer = document.getElementById('dossier-preview');
+    const dock = document.getElementById('dossier-dock');
+    const iframe = document.getElementById('preview-iframe');
+    const title = document.getElementById('preview-title');
+    
+    // Hide Grid smoothly
+    grid.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
+    setTimeout(() => {
+        grid.classList.add('hidden');
+        grid.classList.remove('grid');
+        
+        // Show Preview
+        previewContainer.classList.remove('hidden');
+        setTimeout(() => {
+            previewContainer.classList.remove('opacity-0', 'translate-y-4');
+        }, 50);
+    }, 300);
+
+    // Populate Dock
+    dock.innerHTML = '';
+    globalDossiers.forEach(d => {
+        const isSelected = d.product_code === id;
+        if (isSelected) {
+            iframe.src = d.pdf_url;
+            title.innerText = d.name;
+        }
+        
+        const borderClass = isSelected 
+            ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.2)] bg-slate-800/80' 
+            : 'border-slate-500/30 opacity-60 hover:opacity-100 hover:bg-slate-800/50';
+            
+        dock.innerHTML += `
+            <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-4 rounded-xl transition-all duration-300 border-l-2 ${borderClass} flex flex-col gap-1">
+                <h3 class="font-bold text-white text-xs truncate">${d.name}</h3>
+                <p class="text-[10px] font-mono text-slate-400">ID: ${d.product_code}</p>
+            </div>
+        `;
+    });
+}
+
+function closeDossierPreview() {
+    const grid = document.getElementById('dossier-grid');
+    const previewContainer = document.getElementById('dossier-preview');
+    const iframe = document.getElementById('preview-iframe');
+    
+    previewContainer.classList.add('opacity-0', 'translate-y-4');
+    setTimeout(() => {
+        previewContainer.classList.add('hidden');
+        iframe.src = '';
+        
+        grid.classList.remove('hidden');
+        grid.classList.add('grid');
+        setTimeout(() => {
+            grid.classList.remove('opacity-0', 'translate-y-4', 'pointer-events-none');
+        }, 50);
+    }, 300);
+}
+
 // --- Event Handling ---
 function handleAgentEvent(data) {
     if (data.type === 'IMPACT_DETECTED') {
         currentRunId = data.run_id;
         
-        // Update Header Status to ALERT
         statusBadge.className = "font-mono px-4 py-1.5 bg-rose-500/10 text-rose-400 text-xs font-semibold rounded border border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all duration-300";
         statusBadge.innerText = "[ ALERT : DB_ANOMALY_DETECTED ]";
         coreDot.className = "relative w-3 h-3 bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
@@ -101,22 +155,26 @@ function handleAgentEvent(data) {
         document.getElementById('wf-trigger').innerText = `${data.change_count} DB UPDATE(s)`;
         
         logToConsole(`> [SYS] Threat radar triggered by SQL pipeline. Detected ${data.change_count} changes.`, 'text-rose-400');
-        
         switchView('workflow');
     }
     
     if (data.type === 'AGENT_STATE') {
-        // Reset all steps
         document.querySelectorAll('.step-indicator').forEach(el => {
             el.classList.remove('text-cyan-400', 'text-glow', 'opacity-100');
             el.classList.add('opacity-40');
+            el.querySelector('.indicator-ring')?.classList.remove('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
+            el.querySelector('.indicator-ring')?.classList.add('bg-slate-800', 'border-slate-600');
         });
         
-        // Highlight active
         const activeStep = document.getElementById(`step-${data.state}`);
         if(activeStep) {
             activeStep.classList.remove('opacity-40');
             activeStep.classList.add('text-cyan-400', 'text-glow', 'opacity-100');
+            const ring = activeStep.querySelector('.indicator-ring');
+            if (ring) {
+                ring.classList.remove('bg-slate-800', 'border-slate-600');
+                ring.classList.add('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
+            }
         }
 
         logToConsole(`> [AGENT] Initializing Protocol: ${data.state}...`, 'text-cyan-300');
@@ -125,12 +183,11 @@ function handleAgentEvent(data) {
     if (data.type === 'REVIEW_REQUIRED') {
         currentRunId = data.run_id;
         
-        // Left side: Section name and reasoning
         document.getElementById('rev-section-name').innerText = `${data.section_number} — ${data.title}`;
         document.getElementById('rev-reasoning').innerText = data.reasoning;
         
-        // Right side: Generated content only
-        document.getElementById('rev-new').innerText = data.new_text;
+        // ADDED: Using marked.js to parse the raw markdown output into an HTML table
+        document.getElementById('rev-new').innerHTML = marked.parse(data.new_text);
         
         statusBadge.className = "font-mono px-4 py-1.5 bg-amber-500/10 text-amber-400 text-xs font-semibold rounded border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all duration-300";
         statusBadge.innerText = "[ PAUSED : AWAITING_AUTHORIZATION ]";
@@ -156,8 +213,6 @@ function handleAgentEvent(data) {
         corePing.className = "absolute w-full h-full bg-cyan-500 rounded-full animate-ping opacity-20";
         
         switchView('final');
-        
-        // Manual finish via button - removed auto-reset
     }
 }
 
@@ -179,12 +234,32 @@ async function submitReview(decision) {
     }
 }
 
-// --- Utils ---
+// --- Rolling Console Logic ---
+function logToConsole(msg, colorClass = 'text-slate-300') {
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', minute:'numeric', second:'numeric' });
+    const logEntry = `<span class="text-slate-600 mr-2">[${time}]</span> <span class="${colorClass}">${msg}</span>`;
+    
+    logLines.unshift(logEntry); // Insert at beginning
+    if (logLines.length > 5) logLines.pop(); // Keep only 5
+    
+    renderConsole();
+}
+
+function renderConsole() {
+    consoleOut.innerHTML = '';
+    // Iterate backwards so newest (index 0) is at the bottom
+    for (let i = logLines.length - 1; i >= 0; i--) {
+        const div = document.createElement('div');
+        div.className = `log-line log-line-${i}`;
+        div.innerHTML = logLines[i];
+        consoleOut.appendChild(div);
+    }
+}
+
 function switchView(viewName) {
     Object.keys(views).forEach(key => {
         const el = views[key];
         el.classList.add('opacity-0');
-        // Wait for fade out, then hide
         setTimeout(() => {
             el.classList.add('hidden');
             el.classList.remove('translate-y-0');
@@ -195,23 +270,11 @@ function switchView(viewName) {
     const target = views[viewName];
     setTimeout(() => {
         target.classList.remove('hidden');
-        // Tiny reflow delay to trigger CSS transition
         setTimeout(() => {
             target.classList.remove('opacity-0', 'translate-y-4');
             target.classList.add('translate-y-0');
         }, 50);
     }, 300);
-}
-
-function logToConsole(msg, colorClass = 'text-slate-300') {
-    const div = document.createElement('div');
-    div.className = `console-line ${colorClass}`; 
-    // Add timestamp
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', minute:'numeric', second:'numeric' });
-    div.innerHTML = `<span class="text-slate-600 mr-2">[${time}]</span> ${msg}`;
-    
-    consoleOut.appendChild(div);
-    consoleOut.scrollTop = consoleOut.scrollHeight;
 }
 
 function resetToIdle() {
@@ -228,5 +291,4 @@ function finishWorkflow() {
     resetToIdle();
 }
 
-// Start
 init();
