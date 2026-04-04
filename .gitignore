@@ -48,3 +48,6 @@ Thumbs.db
 *.tmp
 *.bak
 code_dump.txt
+
+# ─── Local model ───────────────────────────────────
+models/
