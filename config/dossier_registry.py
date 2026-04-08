@@ -33,6 +33,14 @@ class DossierManifest:
     def pdf_path(self) -> Path:
         return settings.DOSSIER_DIR / self.pdf_filename
 
+    @property
+    def md_filename(self) -> str:
+        return Path(self.pdf_filename).stem + ".md"
+
+    @property
+    def md_path(self) -> Path:
+        return settings.DOSSIER_DIR / self.md_filename
+
 
 # ── Registry ────────────────────────────────────────────────────────────────
 DOSSIER_REGISTRY: list[DossierManifest] = [

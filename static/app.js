@@ -1,22 +1,45 @@
 // static/app.js
-let currentRunId = null;
-let globalDossiers = []; // Store dossiers globally for dock switching
-let logLines = [];       // Rolling terminal array
+
+let currentRunId       = null;
+let currentReviewId    = null;    // Per-section review ID for pipelined HITL
+let globalDossiers     = [];
+let logLines           = [];      // Now stores objects: { time, msg, colorClass }
+let reviewExpanded     = false;   // Right panel expand state
+let evidenceOpen       = true;    // Level 1: entire evidence block
+let evidenceGroupStates = {};     // Level 2: per operation type { UPDATE: bool, INSERT: bool, ... }
+let currentViewName    = 'idle';  // Track the active view
 
 const views = {
-    idle: document.getElementById('view-idle'),
+    idle:     document.getElementById('view-idle'),
     workflow: document.getElementById('view-workflow'),
-    review: document.getElementById('view-review'),
-    final: document.getElementById('view-final')
+    review:   document.getElementById('view-review'),
+    final:    document.getElementById('view-final')
 };
 
-const consoleOut = document.getElementById('console-output');
 const statusBadge = document.getElementById('status-badge');
-const coreDot = document.getElementById('core-status-dot');
-const corePing = document.getElementById('core-status-ping');
+const coreDot     = document.getElementById('core-status-dot');
+const corePing    = document.getElementById('core-status-ping');
 
-// --- Initialization ---
+
+// ============================================================
+// SVG ICON CONSTANTS
+// ============================================================
+
+const ICON_EXPAND = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="expand-icon"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><polyline points="21 3 14 10"/><polyline points="3 21 10 14"/></svg>`;
+const ICON_COMPRESS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="expand-icon"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><polyline points="10 14 3 21"/><polyline points="14 10 21 3"/></svg>`;
+
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+
 async function init() {
+    const expandBtn = document.getElementById('expand-btn');
+    if (expandBtn) {
+        expandBtn.innerHTML = ICON_EXPAND;
+        expandBtn.title     = 'Expand panel';
+    }
+
     const grid = document.getElementById('dossier-grid');
     grid.innerHTML = `
         <div class="col-span-full flex flex-col items-center justify-center p-10 text-cyan-500/50">
@@ -26,12 +49,13 @@ async function init() {
     `;
 
     try {
-        const res = await fetch('/api/v1/dossiers');
+        // Prevent caching on fetch
+        const res = await fetch('/api/v1/dossiers', { cache: 'no-store' });
         if (!res.ok) throw new Error(`API returned status: ${res.status}`);
-        
+
         globalDossiers = await res.json();
-        grid.innerHTML = ''; 
-        
+        grid.innerHTML = '';
+
         if (globalDossiers.length === 0) {
             grid.innerHTML = `<div class="col-span-full text-slate-500 font-mono text-sm">No dossiers found in registry.</div>`;
             return;
@@ -44,7 +68,7 @@ async function init() {
                     <div class="relative z-10">
                         <div class="flex justify-between items-start mb-2">
                             <h3 class="font-bold text-white text-sm leading-tight group-hover:text-emerald-400 transition-colors">${d.name}</h3>
-                            <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                         </div>
                         <p class="text-[10px] font-mono text-slate-400">ID: ${d.product_code}</p>
                     </div>
@@ -65,7 +89,7 @@ async function init() {
         };
 
         ws.onerror = function() {
-            logToConsole("> [SYS_ERR] WebSocket connection failed. Is the Python server running?", "text-rose-500");
+            logToConsole("WebSocket connection failed. Is the Python server running?", "text-rose-500");
         };
 
     } catch (error) {
@@ -80,40 +104,271 @@ async function init() {
     }
 }
 
-// --- Dossier Display Animations ---
-function openDossierPreview(id) {
-    const grid = document.getElementById('dossier-grid');
-    const previewContainer = document.getElementById('dossier-preview');
-    const dock = document.getElementById('dossier-dock');
-    const iframe = document.getElementById('preview-iframe');
-    const title = document.getElementById('preview-title');
+
+// ============================================================
+// ROLLING CONSOLE LOGIC (Vertical Slot Machine UX)
+// ============================================================
+
+function logToConsole(msg, colorClass = 'text-cyan-300') {
+    const time = new Date().toLocaleTimeString('en-US', {
+        hour12: false, hour: 'numeric', minute: 'numeric', second: 'numeric'
+    });
+
+    // Push clean text directly to array
+    logLines.push({ time, msg, colorClass });
     
-    // Hide Grid smoothly
+    // Keep exactly 5 actual logs for the fade effect
+    if (logLines.length > 5) {
+        logLines.shift();
+    }
+
+    renderConsole();
+}
+
+function renderConsole() {
+    const consoleOut = document.getElementById('console-output');
+    if (!consoleOut) return;
+    
+    let html = '';
+
+    // 1. Render Past/Current Logs (Fading up to 100%)
+    const opacities = ['opacity-20', 'opacity-40', 'opacity-60', 'opacity-80', 'opacity-100'];
+    const offset = 5 - logLines.length; // Ensure the newest is always opacity-100
+
+    logLines.forEach((log, index) => {
+        const op = opacities[index + offset];
+        html += `
+            <div class="flex items-center w-full ${op} transition-all duration-300 mb-2.5">
+                <span class="text-slate-600 mr-3 flex-shrink-0 font-mono tracking-wider">[${log.time}]</span>
+                <span class="text-slate-500 mr-3 flex-shrink-0 font-mono">[AGENT]</span>
+                <span class="${log.colorClass} flex-1 truncate font-mono" title="${log.msg.replace(/"/g, '&quot;')}">${log.msg}</span>
+            </div>
+        `;
+    });
+
+    // 2. Render Future Placeholders (Fading down)
+    const futures = [
+        { op: 'opacity-40', txt: '{ ... awaiting_telemetry }' },
+        { op: 'opacity-20', txt: '{ ... pipeline_idle }' },
+        { op: 'opacity-5',  txt: '[✓] PDF generation stage' }
+    ];
+
+    futures.forEach(f => {
+        html += `
+            <div class="flex items-center w-full ${f.op} transition-all duration-300 mb-2 pl-1 border-l-2 border-slate-700/30 border-dashed ml-1.5">
+                <span class="text-slate-600/50 mr-3 flex-shrink-0 font-mono blur-[1px]">[XX:XX:XX]</span>
+                <span class="text-slate-600/50 mr-3 flex-shrink-0 font-mono blur-[1px]">[AGENT]</span>
+                <span class="text-slate-600/50 flex-1 truncate font-mono blur-[1px]">${f.txt}</span>
+            </div>
+        `;
+    });
+
+    consoleOut.innerHTML = html;
+}
+
+
+// ============================================================
+// EVENT HANDLING
+// ============================================================
+
+function handleAgentEvent(data) {
+
+    // --- IMPACT DETECTED ---
+    if (data.type === 'IMPACT_DETECTED') {
+        currentRunId = data.run_id;
+        
+        statusBadge.className = "font-mono px-4 py-1.5 bg-rose-500/10 text-rose-400 text-xs font-semibold rounded border border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all duration-300";
+        statusBadge.innerText = "[ ALERT : DB_ANOMALY_DETECTED ]";
+        coreDot.className     = "relative w-3 h-3 bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
+        corePing.className    = "absolute w-full h-full bg-rose-500 rounded-full animate-ping opacity-30";
+
+        document.getElementById('wf-product').innerText = data.product_code;
+        document.getElementById('wf-trigger').innerText = `${data.change_count} DB UPDATE(s)`;
+        
+        logToConsole(`Threat radar triggered. Detected ${data.change_count} regulatory shifts.`, 'text-rose-400');
+        logToConsole(`Executing pipeline extraction on product: '${data.product_code}'`, 'text-slate-400');
+        
+        switchView('workflow');
+    }
+
+    // --- AGENT STATE ---
+    if (data.type === 'AGENT_STATE') {
+        document.querySelectorAll('.step-indicator').forEach(el => {
+            el.classList.remove('text-cyan-400', 'text-glow', 'opacity-100');
+            el.classList.add('opacity-40');
+            el.querySelector('.indicator-ring')?.classList.remove('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
+            el.querySelector('.indicator-ring')?.classList.add('bg-slate-800', 'border-slate-600');
+        });
+
+        const activeStep = document.getElementById(`step-${data.state}`);
+        if (activeStep) {
+            activeStep.classList.remove('opacity-40');
+            activeStep.classList.add('text-cyan-400', 'text-glow', 'opacity-100');
+            const ring = activeStep.querySelector('.indicator-ring');
+            if (ring) {
+                ring.classList.remove('bg-slate-800', 'border-slate-600');
+                ring.classList.add('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
+            }
+        }
+
+        const stateMessages = {
+            POLLING:      'Scanning SQL change log for new events...',
+            INTERPRETING: 'LLM interpreting DB changes into regulatory concepts...',
+            MAPPING:      'Mapping concepts to affected dossier sections...',
+            GENERATING:   'Generating updated section content via LLM...',
+            STORING:      'Injecting approved content into Neo4j graph...',
+            COMPILING_PDF:'Dossier PDF generation initiated...',
+        };
+        
+        const msg = stateMessages[data.state] || `Protocol: ${data.state}...`;
+        logToConsole(msg, 'text-cyan-300');
+    }
+
+    // --- REVIEW REQUIRED ---
+    if (data.type === 'REVIEW_REQUIRED') {
+        logToConsole(`Section ${data.section_number} queued — awaiting human authorization.`, 'text-amber-400');
+        currentRunId    = data.run_id;
+        currentReviewId = data.review_id;
+
+        const expandBtn = document.getElementById('expand-btn');
+        if (expandBtn) {
+            expandBtn.innerHTML = ICON_EXPAND;
+            expandBtn.title     = 'Expand panel';
+        }
+
+        // Update progress counter
+        const progressEl = document.getElementById('rev-progress');
+        if (progressEl && data.review_total > 1) {
+            progressEl.innerText = `[ ${data.review_current} / ${data.review_total} ]`;
+            progressEl.classList.remove('hidden');
+        } else if (progressEl) {
+            progressEl.classList.add('hidden');
+        }
+
+        document.getElementById('rev-section-name').innerText = `${data.section_number} — ${data.title}`;
+        document.getElementById('rev-reasoning').innerText    = data.reasoning;
+
+        renderDbEvidence(data.db_changes || []);
+
+        // --- Normalize bullet chars (• ●) into markdown list items ---
+        let rawText = data.new_text || '';
+        let cleanedText = rawText;
+
+        if (/[•●]/.test(rawText)) {
+            const parts = rawText.split(/[•●]\s*/);
+
+            cleanedText = parts[0].trim() + '\n\n';
+
+            for (let i = 1; i < parts.length; i++) {
+                if (parts[i].trim().length > 0) {
+                    cleanedText += '- ' + parts[i].trim() + '\n';
+                }
+            }
+        }
+
+        document.getElementById('rev-new').innerHTML = marked.parse(cleanedText);
+
+        statusBadge.className = "font-mono px-4 py-1.5 bg-amber-500/10 text-amber-400 text-xs font-semibold rounded border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all duration-300";
+        statusBadge.innerText = "[ PAUSED : AWAITING_AUTHORIZATION ]";
+        coreDot.className     = "relative w-3 h-3 bg-amber-400 rounded-full shadow-[0_0_8px_#fbbf24]";
+        corePing.className    = "absolute w-full h-full bg-amber-500 rounded-full animate-ping opacity-20";
+
+        switchView('review');
+    }
+
+    // --- WORKFLOW REJECTED ---
+    if (data.type === 'WORKFLOW_REJECTED') {
+        logToConsole(`Override Denied: ${data.message}`, 'text-rose-500 font-bold');
+        switchView('workflow');
+    }
+
+    // --- WORKFLOW COMPLETE ---
+    if (data.type === 'WORKFLOW_COMPLETE') {
+        logToConsole(`PDF compiled for ${data.product_code}. Download ready.`, 'text-cyan-400');
+        
+        document.getElementById('pdf-orig').src      = data.original_pdf;
+        document.getElementById('pdf-new').src       = data.new_pdf;
+        document.getElementById('download-btn').href = data.new_pdf;
+        
+        statusBadge.className = "font-mono px-4 py-1.5 bg-cyan-500/10 text-cyan-400 text-xs font-semibold rounded border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all duration-300";
+        statusBadge.innerText = "[ SUCCESS : DOSSIER_COMPILED ]";
+        coreDot.className     = "relative w-3 h-3 bg-cyan-400 rounded-full shadow-[0_0_8px_#22d3ee]";
+        corePing.className    = "absolute w-full h-full bg-cyan-500 rounded-full animate-ping opacity-20";
+
+        switchView('final');
+    }
+
+    // --- WORKFLOW ALL REJECTED ---
+    if (data.type === 'WORKFLOW_ALL_REJECTED') {
+        if (currentViewName === 'final') {
+            return; // Ignore if user is already viewing the final success screen
+        }
+
+        logToConsole(`All sections rejected. No changes committed.`, 'text-rose-400');
+        triggerRejectionOverlay();
+    }
+}
+
+
+// ============================================================
+// ACTIONS
+// ============================================================
+
+async function submitReview(decision) {
+    const res = await fetch('/api/v1/workflow/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ review_id: currentReviewId, decision: decision })
+    });
+
+    if (res.ok) {
+        resetReviewExpand();
+        if (decision === 'APPROVE') {
+            logToConsole(`Override Granted. Injecting in background...`, 'text-emerald-400 font-bold');
+        }
+        // Stay on workflow view while waiting for next review or completion
+        switchView('workflow');
+    } else {
+        logToConsole(`ERROR: Failed to submit API decision.`, 'text-rose-500');
+    }
+}
+
+
+// ============================================================
+// DOSSIER DISPLAY ANIMATIONS
+// ============================================================
+
+function openDossierPreview(id) {
+    const grid             = document.getElementById('dossier-grid');
+    const previewContainer = document.getElementById('dossier-preview');
+    const dock             = document.getElementById('dossier-dock');
+    const iframe           = document.getElementById('preview-iframe');
+    const title            = document.getElementById('preview-title');
+
     grid.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
+    
     setTimeout(() => {
         grid.classList.add('hidden');
         grid.classList.remove('grid');
-        
-        // Show Preview
+
         previewContainer.classList.remove('hidden');
         setTimeout(() => {
             previewContainer.classList.remove('opacity-0', 'translate-y-4');
         }, 50);
     }, 300);
 
-    // Populate Dock
     dock.innerHTML = '';
     globalDossiers.forEach(d => {
         const isSelected = d.product_code === id;
         if (isSelected) {
-            iframe.src = d.pdf_url;
+            iframe.src      = d.pdf_url;
             title.innerText = d.name;
         }
-        
-        const borderClass = isSelected 
-            ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.2)] bg-slate-800/80' 
+
+        const borderClass = isSelected
+            ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.2)] bg-slate-800/80'
             : 'border-slate-500/30 opacity-60 hover:opacity-100 hover:bg-slate-800/50';
-            
+
         dock.innerHTML += `
             <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-4 rounded-xl transition-all duration-300 border-l-2 ${borderClass} flex flex-col gap-1">
                 <h3 class="font-bold text-white text-xs truncate">${d.name}</h3>
@@ -124,15 +379,15 @@ function openDossierPreview(id) {
 }
 
 function closeDossierPreview() {
-    const grid = document.getElementById('dossier-grid');
+    const grid             = document.getElementById('dossier-grid');
     const previewContainer = document.getElementById('dossier-preview');
-    const iframe = document.getElementById('preview-iframe');
-    
+    const iframe           = document.getElementById('preview-iframe');
+
     previewContainer.classList.add('opacity-0', 'translate-y-4');
     setTimeout(() => {
         previewContainer.classList.add('hidden');
         iframe.src = '';
-        
+
         grid.classList.remove('hidden');
         grid.classList.add('grid');
         setTimeout(() => {
@@ -141,122 +396,198 @@ function closeDossierPreview() {
     }, 300);
 }
 
-// --- Event Handling ---
-function handleAgentEvent(data) {
-    if (data.type === 'IMPACT_DETECTED') {
-        currentRunId = data.run_id;
-        
-        statusBadge.className = "font-mono px-4 py-1.5 bg-rose-500/10 text-rose-400 text-xs font-semibold rounded border border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all duration-300";
-        statusBadge.innerText = "[ ALERT : DB_ANOMALY_DETECTED ]";
-        coreDot.className = "relative w-3 h-3 bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
-        corePing.className = "absolute w-full h-full bg-rose-500 rounded-full animate-ping opacity-30";
 
-        document.getElementById('wf-product').innerText = data.product_code;
-        document.getElementById('wf-trigger').innerText = `${data.change_count} DB UPDATE(s)`;
-        
-        logToConsole(`> [SYS] Threat radar triggered by SQL pipeline. Detected ${data.change_count} changes.`, 'text-rose-400');
-        switchView('workflow');
-    }
-    
-    if (data.type === 'AGENT_STATE') {
-        document.querySelectorAll('.step-indicator').forEach(el => {
-            el.classList.remove('text-cyan-400', 'text-glow', 'opacity-100');
-            el.classList.add('opacity-40');
-            el.querySelector('.indicator-ring')?.classList.remove('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
-            el.querySelector('.indicator-ring')?.classList.add('bg-slate-800', 'border-slate-600');
-        });
-        
-        const activeStep = document.getElementById(`step-${data.state}`);
-        if(activeStep) {
-            activeStep.classList.remove('opacity-40');
-            activeStep.classList.add('text-cyan-400', 'text-glow', 'opacity-100');
-            const ring = activeStep.querySelector('.indicator-ring');
-            if (ring) {
-                ring.classList.remove('bg-slate-800', 'border-slate-600');
-                ring.classList.add('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
-            }
-        }
+// ============================================================
+// REVIEW PANEL — EXPAND / SHRINK TOGGLE
+// ============================================================
 
-        logToConsole(`> [AGENT] Initializing Protocol: ${data.state}...`, 'text-cyan-300');
-    }
+function toggleExpandReview() {
+    const reasoningPanel = document.getElementById('rev-reasoning-panel');
+    const contentPanel   = document.getElementById('rev-content-panel');
+    const expandBtn      = document.getElementById('expand-btn');
 
-    if (data.type === 'REVIEW_REQUIRED') {
-        currentRunId = data.run_id;
-        
-        document.getElementById('rev-section-name').innerText = `${data.section_number} — ${data.title}`;
-        document.getElementById('rev-reasoning').innerText = data.reasoning;
-        
-        // ADDED: Using marked.js to parse the raw markdown output into an HTML table
-        document.getElementById('rev-new').innerHTML = marked.parse(data.new_text);
-        
-        statusBadge.className = "font-mono px-4 py-1.5 bg-amber-500/10 text-amber-400 text-xs font-semibold rounded border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all duration-300";
-        statusBadge.innerText = "[ PAUSED : AWAITING_AUTHORIZATION ]";
-        coreDot.className = "relative w-3 h-3 bg-amber-400 rounded-full shadow-[0_0_8px_#fbbf24]";
-        corePing.className = "absolute w-full h-full bg-amber-500 rounded-full animate-ping opacity-20";
-        
-        switchView('review');
-    }
-
-    if (data.type === 'WORKFLOW_REJECTED') {
-        logToConsole(`> [AUTH] Override Denied: ${data.message}`, 'text-rose-500 font-bold');
-        resetToIdle();
-    }
-
-    if (data.type === 'WORKFLOW_COMPLETE') {
-        document.getElementById('pdf-orig').src = data.original_pdf;
-        document.getElementById('pdf-new').src = data.new_pdf;
-        document.getElementById('download-btn').href = data.new_pdf;
-        
-        statusBadge.className = "font-mono px-4 py-1.5 bg-cyan-500/10 text-cyan-400 text-xs font-semibold rounded border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all duration-300";
-        statusBadge.innerText = "[ SUCCESS : DOSSIER_COMPILED ]";
-        coreDot.className = "relative w-3 h-3 bg-cyan-400 rounded-full shadow-[0_0_8px_#22d3ee]";
-        corePing.className = "absolute w-full h-full bg-cyan-500 rounded-full animate-ping opacity-20";
-        
-        switchView('final');
+    reviewExpanded = !reviewExpanded;
+    if (reviewExpanded) {
+        reasoningPanel.classList.add('review-panel-hidden');
+        contentPanel.classList.add('review-panel-expand');
+        expandBtn.innerHTML = ICON_COMPRESS;
+        expandBtn.title     = 'Compress panel';
+    } else {
+        reasoningPanel.classList.remove('review-panel-hidden');
+        contentPanel.classList.remove('review-panel-expand');
+        expandBtn.innerHTML = ICON_EXPAND;
+        expandBtn.title     = 'Expand panel';
     }
 }
 
-// --- Actions ---
-async function submitReview(decision) {
-    const res = await fetch('/api/v1/workflow/review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_id: currentRunId, decision: decision })
+function resetReviewExpand() {
+    if (reviewExpanded) {
+        const reasoningPanel = document.getElementById('rev-reasoning-panel');
+        const contentPanel   = document.getElementById('rev-content-panel');
+        const expandBtn      = document.getElementById('expand-btn');
+
+        reasoningPanel.classList.remove('review-panel-hidden');
+        contentPanel.classList.remove('review-panel-expand');
+        if (expandBtn) {
+            expandBtn.innerHTML = ICON_EXPAND;
+            expandBtn.title     = 'Expand panel';
+        }
+        reviewExpanded = false;
+    }
+}
+
+
+// ============================================================
+// DB EVIDENCE TOGGLES & RENDERER
+// ============================================================
+
+function toggleEvidenceBlock() {
+    evidenceOpen = !evidenceOpen;
+    const container = document.getElementById('evidence-cards-container');
+    const chevron   = document.getElementById('evidence-chevron');
+
+    if (!container) return;
+    if (evidenceOpen) {
+        container.classList.remove('evidence-block-hidden');
+        if (chevron) chevron.style.transform = 'rotate(0deg)';
+    } else {
+        container.classList.add('evidence-block-hidden');
+        if (chevron) chevron.style.transform = 'rotate(-90deg)';
+    }
+}
+
+function toggleEvidenceGroup(opType) {
+    evidenceGroupStates[opType] = !evidenceGroupStates[opType];
+    const body    = document.getElementById(`evidence-group-body-${opType}`);
+    const chevron = document.getElementById(`evidence-group-chevron-${opType}`);
+
+    if (!body) return;
+    if (evidenceGroupStates[opType]) {
+        body.classList.remove('evidence-block-hidden');
+        if (chevron) chevron.style.transform = 'rotate(0deg)';
+    } else {
+        body.classList.add('evidence-block-hidden');
+        if (chevron) chevron.style.transform = 'rotate(-90deg)';
+    }
+}
+
+function renderDbEvidence(dbChanges) {
+    evidenceGroupStates = {};
+    evidenceOpen        = true;
+
+    const countBadge = document.getElementById('evidence-count-badge');
+    const container  = document.getElementById('evidence-cards-container');
+    const chevron    = document.getElementById('evidence-chevron');
+
+    if (!container) return;
+
+    if (chevron) chevron.style.transform = 'rotate(0deg)';
+    container.innerHTML = '';
+    container.classList.remove('evidence-block-hidden');
+    
+    if (!dbChanges || dbChanges.length === 0) {
+        if (countBadge) countBadge.textContent = '0';
+        container.innerHTML = `<p class="text-[11px] font-mono text-slate-600 italic mt-2 px-1">No raw DB change records available.</p>`;
+        return;
+    }
+
+    const meaningful = dbChanges.filter(c => {
+        const o = c.old_value !== null && c.old_value !== undefined ? String(c.old_value) : null;
+        const n = c.new_value !== null && c.new_value !== undefined ? String(c.new_value) : null;
+        return o !== n;
     });
     
-    if (res.ok) {
-        if (decision === 'APPROVE') {
-            logToConsole(`> [AUTH] Override Granted. Resuming Graph Injection protocol...`, 'text-emerald-400 font-bold');
-            switchView('workflow');
-        } else {
-            switchView('workflow'); 
-        }
+    if (countBadge) countBadge.textContent = meaningful.length;
+
+    if (meaningful.length === 0) {
+        container.innerHTML = `<p class="text-[11px] font-mono text-slate-600 italic mt-2 px-1">No meaningful changes detected (all values unchanged).</p>`;
+        return;
     }
+
+    const ORDER = ['UPDATE', 'INSERT', 'DELETE'];
+    const groups = {};
+    meaningful.forEach(c => {
+        const op = c.operation_type || 'OTHER';
+        if (!groups[op]) groups[op] = [];
+        groups[op].push(c);
+    });
+    
+    const sortedOps = Object.keys(groups).sort((a, b) => {
+        const ai = ORDER.indexOf(a);
+        const bi = ORDER.indexOf(b);
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+    
+    const opStyles = {
+        'INSERT': { header: 'bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/15', badge: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', count: 'text-emerald-500/70' },
+        'UPDATE': { header: 'bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/15', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/40', count: 'text-amber-500/70' },
+        'DELETE': { header: 'bg-rose-500/10 border-rose-500/20 hover:bg-rose-500/15', badge: 'bg-rose-500/20 text-rose-400 border-rose-500/40', count: 'text-rose-500/70' },
+    };
+    const defaultStyle = { header: 'bg-slate-700/30 border-slate-600/20 hover:bg-slate-700/50', badge: 'bg-slate-500/20 text-slate-400 border-slate-500/40', count: 'text-slate-500/70' };
+    
+    sortedOps.forEach(opType => {
+        const records = groups[opType];
+        const style   = opStyles[opType] || defaultStyle;
+
+        evidenceGroupStates[opType] = true;
+
+        let rowsHtml = '';
+        records.forEach((change, ri) => {
+            const ts = change.change_timestamp ? String(change.change_timestamp).split('T').pop().split('.')[0] : '—';
+            const oldDisplay = (change.old_value !== null && change.old_value !== undefined) ? `<span class="text-rose-300/80">${change.old_value}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
+            const newDisplay = (change.new_value !== null && change.new_value !== undefined) ? `<span class="text-emerald-300/90">${change.new_value}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
+            const divider = ri > 0 ? `<div class="border-t border-white/5 mx-3"></div>` : '';
+            
+            rowsHtml += `
+                ${divider}
+                <div class="px-3 py-2.5 flex flex-col gap-1.5">
+                    <div class="text-[10px] font-mono text-slate-400 tracking-wide mb-0.5">${change.source_table}</div>
+                    <div class="flex items-start gap-2">
+                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">COLUMN</span>
+                        <span class="text-[11px] font-mono text-slate-300 break-all">${change.column_name || '—'}</span>
+                    </div>
+                    <div class="flex items-start gap-2">
+                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">OLD</span>
+                        <span class="text-[11px] font-mono break-all">${oldDisplay}</span>
+                    </div>
+                    <div class="flex items-start gap-2">
+                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">NEW</span>
+                        <span class="text-[11px] font-mono break-all">${newDisplay}</span>
+                    </div>
+                    <div class="flex items-center justify-between mt-0.5">
+                        <span class="text-[10px] font-mono text-slate-600">by&nbsp;${change.changed_by || 'system'}</span>
+                        <span class="text-[10px] font-mono text-slate-600">${ts}</span>
+                    </div>
+                </div>
+            `;
+        });
+
+        container.innerHTML += `
+            <div class="evidence-group mt-2 rounded-lg border overflow-hidden ${style.header.split(' ')[1]}">
+                <div onclick="toggleEvidenceGroup('${opType}')" class="flex items-center justify-between px-3 py-2 ${style.header} cursor-pointer transition-colors duration-200 select-none">
+                    <div class="flex items-center gap-2">
+                        <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${style.badge} flex-shrink-0 uppercase tracking-wider">${opType}</span>
+                        <span class="text-[10px] font-mono ${style.count}">(${records.length})</span>
+                    </div>
+                    <svg id="evidence-group-chevron-${opType}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0 transition-transform duration-300" style="transform: rotate(0deg)"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
+                <div id="evidence-group-body-${opType}" class="evidence-group-body bg-slate-900/40">
+                    ${rowsHtml}
+                </div>
+            </div>
+        `;
+    });
 }
 
-// --- Rolling Console Logic ---
-function logToConsole(msg, colorClass = 'text-slate-300') {
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: 'numeric', minute:'numeric', second:'numeric' });
-    const logEntry = `<span class="text-slate-600 mr-2">[${time}]</span> <span class="${colorClass}">${msg}</span>`;
-    
-    logLines.unshift(logEntry); // Insert at beginning
-    if (logLines.length > 5) logLines.pop(); // Keep only 5
-    
-    renderConsole();
-}
 
-function renderConsole() {
-    consoleOut.innerHTML = '';
-    // Iterate backwards so newest (index 0) is at the bottom
-    for (let i = logLines.length - 1; i >= 0; i--) {
-        const div = document.createElement('div');
-        div.className = `log-line log-line-${i}`;
-        div.innerHTML = logLines[i];
-        consoleOut.appendChild(div);
-    }
-}
+// ============================================================
+// VIEW SWITCHING & OVERLAYS
+// ============================================================
 
 function switchView(viewName) {
+    currentViewName = viewName;
+    if (viewName !== 'review') resetReviewExpand();
+
     Object.keys(views).forEach(key => {
         const el = views[key];
         el.classList.add('opacity-0');
@@ -264,7 +595,7 @@ function switchView(viewName) {
             el.classList.add('hidden');
             el.classList.remove('translate-y-0');
             el.classList.add('translate-y-4');
-        }, 300); 
+        }, 300);
     });
     
     const target = views[viewName];
@@ -280,15 +611,58 @@ function switchView(viewName) {
 function resetToIdle() {
     statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-300";
     statusBadge.innerText = "[ SYS_IDLE : LISTENING_TELEMETRY ]";
-    coreDot.className = "relative w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]";
-    corePing.className = "absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-20";
-    
+    coreDot.className     = "relative w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]";
+    corePing.className    = "absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-20";
+
     switchView('idle');
 }
 
 function finishWorkflow() {
-    logToConsole('> [USER] Workflow complete. Returning to monitoring mode...', 'text-cyan-400');
+    logToConsole('Workflow complete. Returning to monitoring mode...', 'text-cyan-400');
     resetToIdle();
 }
 
+function triggerRejectionOverlay() {
+    const overlay   = document.getElementById('rejection-overlay');
+    const textBlock = document.getElementById('rejection-overlay-text');
+    
+    if (!overlay || !textBlock) {
+        resetToIdle();
+        return;
+    }
+
+    overlay.classList.remove('overlay-entering', 'overlay-exiting');
+    textBlock.classList.remove('overlay-text-visible');
+    textBlock.style.opacity = '0';
+
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            overlay.classList.add('overlay-entering');
+        });
+    });
+    
+    setTimeout(() => {
+        textBlock.classList.add('overlay-text-visible');
+    }, 700);
+    
+    setTimeout(() => {
+        resetToIdle();
+    }, 2000);
+    
+    setTimeout(() => {
+        overlay.classList.remove('overlay-entering');
+        overlay.classList.add('overlay-exiting');
+    }, 2500);
+    
+    setTimeout(() => {
+        overlay.classList.add('hidden');
+        overlay.classList.remove('flex', 'overlay-exiting');
+        textBlock.classList.remove('overlay-text-visible');
+        textBlock.style.opacity = '0';
+    }, 3200);
+}
+
+// Start
 init();

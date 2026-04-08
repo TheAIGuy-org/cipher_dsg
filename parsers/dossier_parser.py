@@ -56,11 +56,40 @@ SECTION_HEADING_RE = re.compile(
     re.MULTILINE,
 )
 
-# Bullet points
-BULLET_RE = re.compile(r'^\s*[•\-\*]\s+', re.MULTILINE)
+# Bullet points — includes ● (U+25CF) injected as real text during PDF generation
+BULLET_RE = re.compile(r'^\s*[●•\-\*]\s+', re.MULTILINE)
 
 
 # ── Main Parser ──────────────────────────────────────────────────────────────
+
+def _strip_page_artifacts(text: str, manifest) -> str:
+    """
+    Remove repeating page headers and footers that pdfplumber injects inline.
+
+    Every page boundary in these PDFs produces three artifact lines:
+      1. "Page X of Y"                        ← footer
+      2. "<PRODUCT NAME> <product_code>"       ← header line 1
+      3. "<version_code> <regqual_code>"       ← header line 2
+
+    We strip them using manifest values so no content is accidentally removed.
+    """
+    lines = text.split('\n')
+    cleaned = []
+    product_name_upper = manifest.product_name.upper()
+    for line in lines:
+        s = line.strip()
+        # Footer: "Page 1 of 3"
+        if re.match(r'^Page \d+ of \d+$', s, re.IGNORECASE):
+            continue
+        # Header line 1: product name + product code on same line
+        if manifest.product_code in s and product_name_upper in s.upper():
+            continue
+        # Header line 2: version code + regqual code on same line
+        if manifest.version_code in s and manifest.regqual_code in s:
+            continue
+        cleaned.append(line)
+    return '\n'.join(cleaned)
+
 
 def parse_dossier(pdf_path, manifest, profiler: Optional[SectionProfiler] = None) -> ParsedDossier:
     """
@@ -85,10 +114,13 @@ def parse_dossier(pdf_path, manifest, profiler: Optional[SectionProfiler] = None
     
     # Extract PDF content
     pages = extract_pdf(pdf_path)
-    
+
     # Build full document
     full_text, all_tables = _build_document(pages)
-    
+
+    # Strip repeating page headers/footers injected by pdfplumber
+    full_text = _strip_page_artifacts(full_text, manifest)
+
     # Find section boundaries
     section_spans = _find_section_spans(full_text)
     log.info(f"  Found {len(section_spans)} sections: "

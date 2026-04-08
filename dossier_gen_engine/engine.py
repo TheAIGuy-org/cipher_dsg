@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dossier_gen_engine.models import EngineManifest, SectionUpdate
-from dossier_gen_engine.pdf_md import process_pdf
+from dossier_gen_engine.pdf_md import process_md
 from dossier_gen_engine.md_pdf import md_to_pdf
 
 log = logging.getLogger(__name__)
@@ -98,11 +98,12 @@ def generate_updated_dossier(
     log.info(f"[engine] output PDF : {pdf_path}")
     log.info("=" * 60)
 
-    # ── STAGE 1: PDF → Markdown (with all section updates injected) ──────
-    log.info("[engine] Stage 1: pdf_md.process_pdf()")
+    # ── STAGE 1: Pre-processed MD + section updates → updated Markdown ───
+    log.info("[engine] Stage 1: pdf_md.process_md()")
+    log.info(f"[engine] source MD  : {manifest.md_path}")
     try:
-        process_pdf(
-            pdf_path=str(manifest.pdf_path),
+        process_md(
+            md_source_path=str(manifest.md_path),
             updated_sections=[s.to_pipeline_dict() for s in updated_sections],
             output_md_path=str(md_path),
             manifest_metadata={

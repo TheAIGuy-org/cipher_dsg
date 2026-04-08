@@ -42,12 +42,30 @@ logging.basicConfig(
 CSS = """
 body {
     font-family: "Times New Roman", Times, serif;
-    font-size: 12px;
-    line-height: 1.6;
+    font-size: 14px;
+    line-height: 1.35;
+    margin: 0;
+    color: #111;
+    max-width: 170mm;
 }
 
-h1, h2, h3 {
+h2 {
+    font-size: 16px;
+    font-weight: bold;
+    margin: 12px 0 4px 0;
     page-break-after: avoid;
+}
+
+h3 {
+    font-size: 13px;
+    font-weight: bold;
+    margin: 8px 0 2px 0;
+    page-break-after: avoid;
+}
+
+p {
+    margin: 2px 0;
+    text-align: justify;
 }
 
 table {
@@ -55,52 +73,34 @@ table {
     width: 100%;
     table-layout: fixed;
     font-size: 10px;
+    margin: 6px 0;
+    page-break-inside: auto;
 }
 
-thead {
-    display: table-header-group;
-}
+thead { display: table-header-group; }
+tr    { break-inside: avoid; }
 
-tr {
-    break-inside: avoid;
+th, td {
+    border: 0.6px solid #444;
+    padding: 3px 4px;
+    vertical-align: top;
+    word-break: break-word;
+    text-transform: uppercase;
 }
 
 th {
+    background-color: #eaeaea;
     font-weight: bold;
-    font-size: 10px;
-    background-color: #f0f0f0;
-}
-
-td {
-    font-size: 10px;
-}
-
-th, td {
-    border: 1px solid #333;
-    padding: 4px;
-    vertical-align: top;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-}
-
-pre {
-    background: #f5f5f5;
-    padding: 8px;
-    white-space: pre-wrap;
-    font-size: 10px;
-}
-
-img {
-    max-width: 100%;
 }
 
 ul {
-    margin: 6px 0 6px 20px;
-    padding-left: 20px;
+    margin: 2px 0 2px 16px;
+    padding-left: 12px;
+    list-style-type: disc;
 }
 
 li {
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }
 """
 

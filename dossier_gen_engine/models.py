@@ -133,13 +133,16 @@ class EngineManifest(BaseModel):
     regqual_code: str = Field(..., description="e.g. 'VV-REGQUAL-108834'")
     issue_date:   str = Field(..., description="ISO date string, e.g. '2022-03-24'")
     pdf_path:     Path = Field(..., description="Absolute path to the source PDF")
+    md_path:      Path = Field(..., description="Absolute path to the pre-processed source Markdown")
 
     model_config = {"arbitrary_types_allowed": True}
 
     @model_validator(mode="after")
-    def pdf_must_exist(self) -> "EngineManifest":
+    def paths_must_exist(self) -> "EngineManifest":
         if not self.pdf_path.exists():
             raise ValueError(f"Source PDF not found: {self.pdf_path}")
+        if not self.md_path.exists():
+            raise ValueError(f"Pre-processed Markdown not found: {self.md_path}")
         return self
 
     # ── Factory ───────────────────────────────────────────────────────────
@@ -161,4 +164,5 @@ class EngineManifest(BaseModel):
             regqual_code=entry.regqual_code,
             issue_date=entry.issue_date,
             pdf_path=entry.pdf_path,
+            md_path=entry.md_path,
         )

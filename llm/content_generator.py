@@ -23,6 +23,9 @@ CONTEXT_VIEW_MAP = {
     "2.2.7": "vw_Context_NaturalOrigin"
 }
 
+# Internal DB columns that should never reach the LLM or appear in documents
+INTERNAL_COLUMNS = {'ProductID', 'ProductCode'}
+
 
 class GeneratedContent(BaseModel):
     """
@@ -83,7 +86,12 @@ class SectionContentGenerator:
         if context_view_name:
             logger.info(f"   Executing DB View Scoping: {context_view_name}")
             target_context_array = sql_client.fetch_context_view(context_view_name, plan.product_code)
-        
+            # Strip internal DB columns before they reach the LLM
+            target_context_array = [
+                {k: v for k, v in row.items() if k not in INTERNAL_COLUMNS}
+                for row in target_context_array
+            ]
+
         # Extract format from reference
         format_analysis = self._analyze_format(plan.reference_full_text)
         logger.info(f"   Detected format: {format_analysis['style']}")
@@ -176,38 +184,48 @@ Identify the format style, vocabulary patterns, and structural organization."""
     def _generate_with_llm(self, plan: SectionUpdatePlan, format_style: dict, sql_context_array: list) -> str:
         """
         Generate actual section content using LLM.
-        Applies detected format dynamically using the STRICT DB Truth Array.
+        Branches prompt strategy based on SAME_PATTERN vs NEW_PATTERN.
         """
+        is_same_pattern = (plan.pattern_change_type == "SAME_PATTERN")
+
         # Build change summary
         change_details = "\n".join([
             f"- {cc.concept}: {cc.change_type}\n  Description: {cc.description}\n  Affected: {cc.affected_entity}"
             for cc in plan.concept_changes
         ])
-        
-        # Prepare vocabulary patterns - NO TRUNCATION
-        vocab_patterns_text = ', '.join(format_style.get('vocabulary_patterns', []))
-        if not vocab_patterns_text:
-            vocab_patterns_text = "standard regulatory terminology"
-        
+
+        # Build the conditional Rule 1 block
+        if is_same_pattern:
+            rule_1_block = f"""1. DOCUMENT PRESERVATION (HOW to write):
+   - The Reference Section IS your current live document for this product.
+   - PRESERVE all introductory paragraphs, concluding paragraphs, and regulatory boilerplate language VERBATIM. These are not templates — they are the actual document text and must appear unchanged in your output.
+   - PRESERVE all data rows/entries that are NOT targeted by the Specific Changes exactly as they appear in the Reference Section. Do not regenerate untouched rows from the database context.
+   - Only MODIFY the specific rows/entries/values targeted by the changes.
+   - You MUST fix any obvious typographical or OCR spacing errors (e.g., missing spaces between words) found in the Reference Section when producing your final text.
+   - Detected Format: {format_style['style']}
+   - Detected Structural Pattern: {format_style['structural_pattern']}"""
+        else:
+            rule_1_block = f"""1. SKELETON REPLICATION (HOW to write):
+   - The Reference Section is a FORMAT TEMPLATE from a different product. Adopt its exact structural layout, formatting style, and regulatory vocabulary.
+   - CRITICAL ISOLATION: Do NOT carry over any product-specific data from the Reference Section (ingredient names, concentrations, supplier names, entity names). Only replicate its structure, regulatory phrasing patterns, and layout.
+   - You MUST fix any obvious typographical or OCR spacing errors (e.g., missing spaces between words) found in the Reference Section when producing your final text.
+   - Detected Reference Format Constraint: {format_style['style']}
+   - Detected Reference Structural Pattern: {format_style['structural_pattern']}"""
+
         system_prompt = f"""You are an expert regulatory dossier writer, responsible for drafting highly precise compliance documents.
 
 Your objective is to generate the COMPLETE text for a specific section of a product dossier by surgically applying changes to the current data.
 
 INSTRUCTIONS & RULES:
 
-1. SKELETON REPLICATION (HOW to write):
-   - You MUST adopt the exact structural layout of the Reference Section (e.g., Markdown tables, prose).
-   - CRITICAL ISOLATION: The Reference Section is strictly a structural template. You MUST NOT plagiarize or carry over ANY specific product data, chemical names (like 'Vanillin'), concentrations, or entity names from the Reference Section into your final text.
-   - You MUST fix any obvious typographical or OCR spacing errors (e.g., missing spaces between words) found in the Reference Section when producing your final text.
-   - Detected Reference Format Constraint: {format_style['style']}
-   - Detected Reference Structural Pattern: {format_style['structural_pattern']}
+{rule_1_block}
 
 2. DATA INJECTION (WHAT to write):
-   - You will receive a block of "Current State" text and a set of "Specific Changes to Apply".
-   - TOTAL PRESERVATION: You MUST meticulously preserve 100% of the existing entities, rows, and data from the "Current State" (if it is populated) exactly as they appear. Do not discard untouched data.
-   - EMPTY PRESERVATION: If the "Current State" is empty or "N/A", you are building the section entirely from scratch! Use the Reference Skeleton format, but populate it ONLY with the entities introduced in the "Specific Changes".
-   - POINT-BLANK REPLACEMENT: Check the explicit entity targeted by the "Specific Changes". Locate its exact physical representation in the Current State, and execute a surgical replacement of ONLY its associated value/cell. NEVER append an update blindly to the end of a document if an existing entry for that entity is already present.
-   - NOVEL ENTITY INSERTION: If the "Specific Changes" mandate introducing a non-existent entity, deduce its proper hierarchical or alphabetical placement and insert it seamlessly respecting the established structural pattern.
+   - You will receive "Specific Changes" and optionally a "LIVE DATABASE CONTEXT" array.
+   - The DATABASE CONTEXT provides current factual values from the database. Use it to verify and populate data values.
+   - POINT-BLANK REPLACEMENT: For each Specific Change, locate the exact corresponding entry in the document and execute a surgical replacement of ONLY its value. Do NOT append updates to the end if an existing entry already covers that entity.
+   - NOVEL ENTITY INSERTION: If a change introduces a new entity not present in the current document, insert it in proper alphabetical or hierarchical order, matching the established structural pattern.
+   - SILENT SKIP: If a listed change has NO corresponding entry in the DATABASE CONTEXT, do NOT mention it at all. Only include data that is verifiable in the database context. NEVER write changelog-style statements like "X has been updated" or "X has been modified to reflect changes."
 
 3. MARKDOWN INTEGRITY:
    - If editing a Markdown table, meticulously maintain pipe `|` alignment. Prevent jagged edges. Guarantee that the modified cell seamlessly occupies the correct corresponding column.
@@ -215,31 +233,55 @@ INSTRUCTIONS & RULES:
 4. REQUIRED OUTPUT FORMAT:
    - Step 1: You must FIRST write out your Chain of Thought analysis enclosed strictly within `<reasoning>` and `</reasoning>` tags. Detail exactly what rows exist, what needs modification, what needs creating, and how you will format it, before continuing.
    - Step 2: Immediately following the closing `</reasoning>` tag, output the finalized, complete content for the target section.
-   - DO NOT wrap your text in markdown formatting code blocks unless mandated by the structure itself. Output raw text."""
+   - DO NOT wrap your text in markdown formatting code blocks unless mandated by the structure itself. Output raw text.
+   - Your output must read as a final regulatory document. No meta-commentary, no change descriptions, no annotations about what was modified."""
 
-        user_prompt = f"""== REFERENCE SKELETON (Format & Vocabulary) ==
+        # Build the conditional TASK block
+        if is_same_pattern:
+            task_block = f"""== TASK ==
+Generate the complete and updated section content.
+1. Think step-by-step inside a `<reasoning>...</reasoning>` block. Identify:
+   - Which specific rows/entries are targeted by the changes
+   - What their current values are in the Reference Section
+   - What the new values should be (from the DATABASE CONTEXT or change descriptions)
+   - Which parts of the document remain completely untouched
+
+2. FORMAT RULE: Output using the SAME format as the Reference Section. If the Reference uses bullet points, output bullet points. If it uses a table, output a table. If it uses prose, output prose. The Reference Section's format is authoritative — do NOT convert between formats.
+
+3. COLUMN/LABEL NAMING: When presenting data in tables or lists, use the same column headers and label style as the Reference Section — NOT the raw database key names. For example, if the Reference Section says "Manufacturer (or Supplier)" but the database key is "Supplier Name", use "Manufacturer (or Supplier)".
+
+4. For rows NOT targeted by any change, preserve them exactly from the Reference Section text — do not regenerate them from the database array.
+
+5. Below the reasoning block, output ONLY the full, final target dossier section. DO NOT output the "Source:" or "Text:" headers. Include all introductory and concluding paragraphs from the Reference Section."""
+        else:
+            task_block = f"""== TASK ==
+Generate the complete and updated section content.
+1. Think step-by-step inside a `<reasoning>...</reasoning>` block. Map exactly how you will populate the Reference Skeleton format with the provided data.
+
+2. FORMAT RULE: Output using the SAME format as the Reference Section. If the Reference uses bullet points, output bullet points. If it uses a table, output a table. If it uses prose, output prose. The Reference Section's format is authoritative — do NOT convert between formats.
+
+3. DATA SCOPE: The LIVE DATABASE CONTEXT defines the complete data set for this section. Format its entries into the Reference Skeleton's structure. If the database context is empty, rely on the change descriptions.
+
+4. COLUMN/LABEL NAMING: When presenting data, use human-readable regulatory terminology that matches the Reference Section's style — NOT raw database key names (e.g., use "Ingredient" not "INCI_Name", use "Allergen" not "AllergenName").
+
+5. Below the reasoning block, output ONLY the full, final target dossier section. Adopt the Reference Skeleton's introductory regulatory language and phrasing patterns, but populate with YOUR product's data only."""
+
+        user_prompt = f"""== REFERENCE SECTION ==
 Source: Product {plan.reference_product_code}, Section {plan.reference_section_number}: {plan.title}
 Text:
 {plan.reference_full_text}
 
-== DATA TO INJECT (YOUR ABSOLUTE SOURCE OF TRUTH) ==
-Current State Narrative:
+== CONTEXT ==
+Current Situation Summary (for context only, not for output):
 {plan.old_semantic_description}
 
 Specific Database Changes Triggering this Update:
 {change_details}
 
->>> LIVE TARGET DATABASE CONTEXT (MANDATORY DATA SOURCE) <<<
-{str(sql_context_array) if sql_context_array else "No strict tabular context available for this section."}
+LIVE DATABASE CONTEXT (current factual values):
+{str(sql_context_array) if sql_context_array else "No database context available for this section."}
 
-== TASK ==
-Generate the complete and updated section content. 
-1. Think step-by-step inside a `<reasoning>...</reasoning>` block. Map exactly how you will execute the surgical injection. 
-- CRITICAL MATH RULE: If writing a tabular or highly structured section and LIVE TARGET DATABASE CONTEXT is provided, your SOLE JOB is to format that precise JSON array into Markdown matching the Reference Skeleton.
-- NEVER invent columns that do not exist in the JSON Array keys!
-- MANDATORY COLUMN EXPANSION: If the LIVE TARGET DATABASE CONTEXT contains keys (like 'Trade Name' or 'Manufacturer/Supplier') that do not exist as distinct columns in the Reference Skeleton table, you MUST expand the Markdown table to safely house these separate columns. Do not merge or discard data just because the structural skeleton lacked that column!
-- If the JSON Array excludes `Percentage` or `Commercial Name`, you MUST EXCLUDE IT from your final formatting as well. The array enforces the strict scope.
-2. Below the reasoning block, output ONLY the full, final target dossier section, meticulously adopting the formatting pattern of the REFERENCE SKELETON. DO NOT output the "Source:" or "Text:" headers from the reference. DO NOT output introductory or concluding remarks."""
+{task_block}"""
 
         try:
             response = self.llm.ask(
