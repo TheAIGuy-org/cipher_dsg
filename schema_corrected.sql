@@ -268,31 +268,31 @@ INSERT INTO Ingredients (IngredientID, INCI_Name) VALUES
 (41,'PHENOXYETHANOL'),(42,'PANTOLACTONE');
 
 -- ── Products ───────────────────────────────────────────────────────────────
--- All three Bepanthol products. Statements kept as full regulatory text.
+-- All three Wellcare products. Statements kept as full regulatory text.
 INSERT INTO Products (ProductID, ProductCode, ProductName, RegQualCode,
     DocumentVersionCode, AnimalTestingStatement, BSE_TSE_Statement,
     GMO_Statement, NanomaterialStatement, LastUpdate)
 VALUES
-(1, '1614322', 'BEPANTHOL Face Day Cream', 'VV-REGQUAL-108834', 'C.2.2-03',
+(1, '1614322', 'Wellcare Face Day Cream', 'VV-REGQUAL-108834', 'C.2.2-03',
     'No animal testing has been performed on the finished product or its ingredients in order to meet the requirements of the EU Regulation No 1223/2009 on cosmetic products.',
     'Raw materials do not contain any material derived from animal species listed in TSE/BSE risk categories, and do not present a risk of transmitting TSE/BSE.',
     'Raw materials do not contain any GMO ingredients or derivatives thereof.',
     'No nanomaterial as defined in Regulation (EC) No 1223/2009 is present in this product.',
     '2022-03-24'),
-(2, '1614557', 'BEPANTHOL Lipstick', 'VV-REGQUAL-206035', 'C.2.2-02',
+(2, '1614557', 'Wellcare Lipstick', 'VV-REGQUAL-206035', 'C.2.2-02',
     'No animal testing has been performed on the finished product or its ingredients in order to meet the requirements of the EU Regulation No 1223/2009 on cosmetic products.',
     'Raw materials do not present concern regarding TSE/BSE risk, as they are not derived from animal species listed in TSE/BSE risk categories.',
     'Raw materials do not contain any GMO ingredients or derivatives thereof.',
     'No nanomaterial as defined in Regulation (EC) No 1223/2009 is present in this product.',
     '2024-05-29'),
-(3, '1600188', 'BEPANTHOL Cream', 'VV-REGQUAL-191544', 'C.2.2-01',
+(3, '1600188', 'Wellcare Cream', 'VV-REGQUAL-191544', 'C.2.2-01',
     'No animal testing has been performed on the finished product or its ingredients in order to meet the requirements of the EU Regulation No 1223/2009 on cosmetic products.',
     'Raw materials do not present concern regarding TSE/BSE risk, as they are not derived from animal species listed in TSE/BSE risk categories.',
     'Raw materials do not contain any GMO ingredients or derivatives thereof.',
     'No nanomaterial as defined in Regulation (EC) No 1223/2009 is present in this product.',
     '2022-09-01');
 
--- ── Product 1: BEPANTHOL Face Day Cream (1614322) ─────────────────────────
+-- ── Product 1: Wellcare Face Day Cream (1614322) ─────────────────────────
 -- RawMaterials: IDs 1–18
 INSERT INTO RawMaterials (RawMaterialID, IngredientID, SupplierID, CommercialName, NaturalOriginIndex) VALUES
 (1,1,30,'PURIFIED WATER',1.00),(2,2,1,'MIGLYOL 812 N',1.00),
@@ -317,7 +317,7 @@ INSERT INTO RawMaterialTraces (TraceID, RawMaterialID, SubstanceName, Classifica
 (1,12,'Toluene','CMR 2',80.0),
 (2,6,'Dichloromethane','CMR 2',50.0);
 
--- ── Product 2: BEPANTHOL Lipstick (1614557) ───────────────────────────────
+-- ── Product 2: Wellcare Lipstick (1614557) ───────────────────────────────
 -- RawMaterials: IDs 19–37
 INSERT INTO RawMaterials (RawMaterialID, IngredientID, SupplierID, CommercialName, NaturalOriginIndex) VALUES
 (19,2,8,'Myritol 318 MB',1.00),(20,19,15,'Castor oil refined',1.00),
@@ -356,7 +356,7 @@ INSERT INTO RawMaterialTraces (TraceID, RawMaterialID, SubstanceName, Classifica
 (12,29,'P-aminobenzoic acid',NULL,2000.0),
 (13,36,'Diethylene glycol (DEG)',NULL,1000.0);
 
--- ── Product 3: BEPANTHOL Cream (1600188) ──────────────────────────────────
+-- ── Product 3: Wellcare Cream (1600188) ──────────────────────────────────
 -- RawMaterials: IDs 38–47
 -- Source: dossier section 2.2.1 historical manufacturer table
 INSERT INTO RawMaterials (RawMaterialID, IngredientID, SupplierID, CommercialName, NaturalOriginIndex) VALUES
@@ -374,7 +374,7 @@ INSERT INTO RawMaterials (RawMaterialID, IngredientID, SupplierID, CommercialNam
 -- Formulation for Cream.
 -- The Cream dossier (section 2.2.1) uses the "historically manufactured" formula
 -- and does not print explicit percentages in its table. The values below are
--- derived from typical BEPANTHOL Cream 5% Panthenol formulation (registered
+-- derived from typical Wellcare Cream 5% Panthenol formulation (registered
 -- public knowledge). They are "pure data" and do not encode any dossier metadata.
 INSERT INTO ProductFormulations (ProductID, RawMaterialID, PercentageInProduct) VALUES
 (3,38,73.35000),  -- PURIFIED WATER (balance to 100%)
@@ -1125,7 +1125,7 @@ PRINT 'DATABASE SETUP COMPLETE.';
 PRINT 'Tables created: Products, Suppliers, Ingredients, RawMaterials,';
 PRINT '  ProductFormulations, RawMaterialAllergens, RawMaterialTraces,';
 PRINT '  ProductBatchTests, ProductMarkets, SupplierDocuments, ProductChangeLog';
-PRINT 'All 3 Bepanthol products populated with dossier-accurate data.';
+PRINT 'All 3 Wellcare products populated with dossier-accurate data.';
 PRINT 'Triggers installed on: RawMaterialAllergens, RawMaterialTraces,';
 PRINT '  ProductFormulations, Products, RawMaterials, ProductBatchTests';
 PRINT 'Polling infrastructure ready — no CDC, no SQL Server Agent required.';

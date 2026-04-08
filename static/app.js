@@ -82,14 +82,27 @@ async function init() {
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/stream`);
-        
-        ws.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            handleAgentEvent(data);
+
+        ws.onopen = function() {
+            logToConsole("WebSocket connected to backend server", "text-emerald-400");
         };
 
-        ws.onerror = function() {
-            logToConsole("WebSocket connection failed. Is the Python server running?", "text-rose-500");
+        ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                handleAgentEvent(data);
+            } catch(e) {
+                console.error("Failed to parse WebSocket message:", e, event.data);
+            }
+        };
+
+        ws.onerror = function(error) {
+            logToConsole("WebSocket error: Connection failed or lost", "text-rose-500");
+            console.error("WebSocket error:", error);
+        };
+
+        ws.onclose = function() {
+            logToConsole("WebSocket disconnected from server", "text-rose-400");
         };
 
     } catch (error) {
@@ -216,8 +229,7 @@ function handleAgentEvent(data) {
             INTERPRETING: 'LLM interpreting DB changes into regulatory concepts...',
             MAPPING:      'Mapping concepts to affected dossier sections...',
             GENERATING:   'Generating updated section content via LLM...',
-            STORING:      'Injecting approved content into Neo4j graph...',
-            COMPILING_PDF:'Dossier PDF generation initiated...',
+            COMPILING_PDF:'Compiling updated dossier PDF...',
         };
         
         const msg = stateMessages[data.state] || `Protocol: ${data.state}...`;
@@ -226,7 +238,9 @@ function handleAgentEvent(data) {
 
     // --- REVIEW REQUIRED ---
     if (data.type === 'REVIEW_REQUIRED') {
-        logToConsole(`Section ${data.section_number} queued — awaiting human authorization.`, 'text-amber-400');
+        _reviewSubmitting = false;  // Re-enable submit buttons for next review
+        const reviewNumber = data.review_current ? ` (${data.review_current}/${data.review_total})` : '';
+        logToConsole(`Section ${data.section_number} queued — awaiting human authorization${reviewNumber}.`, 'text-amber-400');
         currentRunId    = data.run_id;
         currentReviewId = data.review_id;
 
@@ -236,35 +250,19 @@ function handleAgentEvent(data) {
             expandBtn.title     = 'Expand panel';
         }
 
-        // Update progress counter
-        const progressEl = document.getElementById('rev-progress');
-        if (progressEl && data.review_total > 1) {
-            progressEl.innerText = `[ ${data.review_current} / ${data.review_total} ]`;
-            progressEl.classList.remove('hidden');
-        } else if (progressEl) {
-            progressEl.classList.add('hidden');
-        }
-
-        document.getElementById('rev-section-name').innerText = `${data.section_number} — ${data.title}`;
+        // Build section name with review badge
+        const reviewBadge = (data.review_total > 1)
+            ? ` <span class="ml-3 inline-block px-2 py-0.5 bg-amber-500/20 border border-amber-500/50 rounded text-amber-400 text-xs font-mono">${data.review_current}/${data.review_total}</span>`
+            : '';
+        document.getElementById('rev-section-name').innerHTML = `${data.section_number} — ${data.title}${reviewBadge}`;
         document.getElementById('rev-reasoning').innerText    = data.reasoning;
 
         renderDbEvidence(data.db_changes || []);
 
-        // --- Normalize bullet chars (• ●) into markdown list items ---
-        let rawText = data.new_text || '';
-        let cleanedText = rawText;
-
-        if (/[•●]/.test(rawText)) {
-            const parts = rawText.split(/[•●]\s*/);
-
-            cleanedText = parts[0].trim() + '\n\n';
-
-            for (let i = 1; i < parts.length; i++) {
-                if (parts[i].trim().length > 0) {
-                    cleanedText += '- ' + parts[i].trim() + '\n';
-                }
-            }
-        }
+        // --- Normalize bullet chars (• ●) into standard markdown list items ---
+        const cleanedText = (data.new_text || '')
+            .replace(/([^\n])[•●]\s*/g, '$1\n- ')
+            .replace(/^\s*[•●]\s*/gm, '- ');
 
         document.getElementById('rev-new').innerHTML = marked.parse(cleanedText);
 
@@ -276,6 +274,18 @@ function handleAgentEvent(data) {
         switchView('review');
     }
 
+    // --- PLAN APPROVED (per-section feedback) ---
+    if (data.type === 'PLAN_APPROVED') {
+        logToConsole(`Approved: ${data.section} — ${data.message}`, 'text-emerald-400');
+        statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded border border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-300";
+        statusBadge.innerText = "[ APPROVED : SECTION_QUEUED ]";
+    }
+
+    // --- PLAN REJECTED (per-section feedback) ---
+    if (data.type === 'PLAN_REJECTED') {
+        logToConsole(`Rejected: ${data.section} — ${data.message}`, 'text-rose-400');
+    }
+
     // --- WORKFLOW REJECTED ---
     if (data.type === 'WORKFLOW_REJECTED') {
         logToConsole(`Override Denied: ${data.message}`, 'text-rose-500 font-bold');
@@ -284,6 +294,7 @@ function handleAgentEvent(data) {
 
     // --- WORKFLOW COMPLETE ---
     if (data.type === 'WORKFLOW_COMPLETE') {
+        _reviewSubmitting = false;
         logToConsole(`PDF compiled for ${data.product_code}. Download ready.`, 'text-cyan-400');
         
         document.getElementById('pdf-orig').src      = data.original_pdf;
@@ -300,6 +311,7 @@ function handleAgentEvent(data) {
 
     // --- WORKFLOW ALL REJECTED ---
     if (data.type === 'WORKFLOW_ALL_REJECTED') {
+        _reviewSubmitting = false;
         if (currentViewName === 'final') {
             return; // Ignore if user is already viewing the final success screen
         }
@@ -314,7 +326,12 @@ function handleAgentEvent(data) {
 // ACTIONS
 // ============================================================
 
+let _reviewSubmitting = false;
+
 async function submitReview(decision) {
+    if (_reviewSubmitting) return;
+    _reviewSubmitting = true;
+
     const res = await fetch('/api/v1/workflow/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -324,12 +341,19 @@ async function submitReview(decision) {
     if (res.ok) {
         resetReviewExpand();
         if (decision === 'APPROVE') {
-            logToConsole(`Override Granted. Injecting in background...`, 'text-emerald-400 font-bold');
+            logToConsole(`Override Granted. Section queued for compilation.`, 'text-emerald-400 font-bold');
+        } else {
+            logToConsole(`Section rejected.`, 'text-rose-400');
         }
-        // Stay on workflow view while waiting for next review or completion
-        switchView('workflow');
+        // Do NOT call switchView here. Let WebSocket events drive transitions:
+        //   - REVIEW_REQUIRED  → stays on review, updates content in-place
+        //   - WORKFLOW_COMPLETE → switches to final
+        //   - WORKFLOW_ALL_REJECTED → rejection overlay → idle
+        // This eliminates the race where switchView('workflow') collides with
+        // an incoming switchView('review') from the next REVIEW_REQUIRED.
     } else {
         logToConsole(`ERROR: Failed to submit API decision.`, 'text-rose-500');
+        _reviewSubmitting = false;
     }
 }
 
@@ -525,6 +549,12 @@ function renderDbEvidence(dbChanges) {
     };
     const defaultStyle = { header: 'bg-slate-700/30 border-slate-600/20 hover:bg-slate-700/50', badge: 'bg-slate-500/20 text-slate-400 border-slate-500/40', count: 'text-slate-500/70' };
     
+    function esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
     sortedOps.forEach(opType => {
         const records = groups[opType];
         const style   = opStyles[opType] || defaultStyle;
@@ -534,17 +564,17 @@ function renderDbEvidence(dbChanges) {
         let rowsHtml = '';
         records.forEach((change, ri) => {
             const ts = change.change_timestamp ? String(change.change_timestamp).split('T').pop().split('.')[0] : '—';
-            const oldDisplay = (change.old_value !== null && change.old_value !== undefined) ? `<span class="text-rose-300/80">${change.old_value}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
-            const newDisplay = (change.new_value !== null && change.new_value !== undefined) ? `<span class="text-emerald-300/90">${change.new_value}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
+            const oldDisplay = (change.old_value !== null && change.old_value !== undefined) ? `<span class="text-rose-300/80">${esc(String(change.old_value))}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
+            const newDisplay = (change.new_value !== null && change.new_value !== undefined) ? `<span class="text-emerald-300/90">${esc(String(change.new_value))}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
             const divider = ri > 0 ? `<div class="border-t border-white/5 mx-3"></div>` : '';
             
             rowsHtml += `
                 ${divider}
                 <div class="px-3 py-2.5 flex flex-col gap-1.5">
-                    <div class="text-[10px] font-mono text-slate-400 tracking-wide mb-0.5">${change.source_table}</div>
+                    <div class="text-[10px] font-mono text-slate-400 tracking-wide mb-0.5">${esc(change.source_table || '')}</div>
                     <div class="flex items-start gap-2">
                         <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">COLUMN</span>
-                        <span class="text-[11px] font-mono text-slate-300 break-all">${change.column_name || '—'}</span>
+                        <span class="text-[11px] font-mono text-slate-300 break-all">${esc(change.column_name || '—')}</span>
                     </div>
                     <div class="flex items-start gap-2">
                         <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">OLD</span>
@@ -555,7 +585,7 @@ function renderDbEvidence(dbChanges) {
                         <span class="text-[11px] font-mono break-all">${newDisplay}</span>
                     </div>
                     <div class="flex items-center justify-between mt-0.5">
-                        <span class="text-[10px] font-mono text-slate-600">by&nbsp;${change.changed_by || 'system'}</span>
+                        <span class="text-[10px] font-mono text-slate-600">by&nbsp;${esc(change.changed_by || 'system')}</span>
                         <span class="text-[10px] font-mono text-slate-600">${ts}</span>
                     </div>
                 </div>
@@ -584,28 +614,34 @@ function renderDbEvidence(dbChanges) {
 // VIEW SWITCHING & OVERLAYS
 // ============================================================
 
+let _switchViewTimer = null;
+
 function switchView(viewName) {
+    // Cancel any pending transition to prevent race conditions
+    // (e.g. submitReview → workflow vs REVIEW_REQUIRED → review colliding)
+    if (_switchViewTimer) {
+        clearTimeout(_switchViewTimer);
+        _switchViewTimer = null;
+    }
+
     currentViewName = viewName;
     if (viewName !== 'review') resetReviewExpand();
 
+    // Immediately hide all views
     Object.keys(views).forEach(key => {
         const el = views[key];
-        el.classList.add('opacity-0');
-        setTimeout(() => {
-            el.classList.add('hidden');
-            el.classList.remove('translate-y-0');
-            el.classList.add('translate-y-4');
-        }, 300);
+        el.classList.add('hidden', 'opacity-0', 'translate-y-4');
+        el.classList.remove('translate-y-0');
     });
-    
+
+    // Show target with a short fade-in
     const target = views[viewName];
-    setTimeout(() => {
-        target.classList.remove('hidden');
-        setTimeout(() => {
-            target.classList.remove('opacity-0', 'translate-y-4');
-            target.classList.add('translate-y-0');
-        }, 50);
-    }, 300);
+    target.classList.remove('hidden');
+    _switchViewTimer = setTimeout(() => {
+        target.classList.remove('opacity-0', 'translate-y-4');
+        target.classList.add('translate-y-0');
+        _switchViewTimer = null;
+    }, 50);
 }
 
 function resetToIdle() {

@@ -122,13 +122,9 @@
                             <div class="w-4 h-4 rounded-full bg-slate-800 border-2 border-slate-600 z-10 indicator-ring"></div>
                             <span class="font-mono text-xs tracking-wider">04_GENERATE_LLM</span>
                         </div>
-                        <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-STORING">
-                            <div class="w-4 h-4 rounded-full bg-slate-800 border-2 border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider">05_INJECT_GRAPH</span>
-                        </div>
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-COMPILING_PDF">
                             <div class="w-4 h-4 rounded-full bg-slate-800 border-2 border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider">06_DOSSIER_GENERATION</span>
+                            <span class="font-mono text-xs tracking-wider">05_COMPILE_PDF</span>
                         </div>
                     </div>
                 </div>
@@ -159,7 +155,6 @@
                     </h2>
                     <p class="text-sm text-slate-400 mt-1 font-mono">Agent paused. Validate generated structure before Neo4j injection.</p>
                 </div>
-                <span id="rev-progress" class="hidden font-mono text-sm text-amber-400/80 border border-amber-500/30 px-3 py-1 rounded bg-amber-500/10 tracking-wider flex-shrink-0"></span>
             </div>
 
             <div class="flex flex-1 overflow-hidden gap-4">

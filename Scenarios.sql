@@ -18,7 +18,7 @@
 
 
 --1. Add "Mercury" as an allergen for the same raw material that currently lists "Vanillin"
--- for ProductCode 1614557 (BEPANTHOL Lipstick).
+-- for ProductCode 1614557 (Wellcare Lipstick).
  DECLARE @NewAllergenID INT = (SELECT ISNULL(MAX(AllergenID), 0) + 1
                               FROM dbo.RawMaterialAllergens);
 

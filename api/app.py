@@ -1,10 +1,9 @@
 # api/app.py
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -222,7 +221,7 @@ async def get_dossiers():
                 "product_code": d.product_code,
                 "name":         d.product_name,
                 # FIX: Routed to the /view/ subdirectory
-                "pdf_url":      f"/dossiers/view/{d.pdf_filename}" 
+                "pdf_url":      f"/dossiers/{d.pdf_filename}"
             })
         else:
             log.warning(f"Dossier PDF not found on disk, skipping: {d.pdf_path}")
@@ -244,26 +243,28 @@ async def submit_review(decision: ReviewDecision):
 # BACKGROUND AUTONOMOUS AGENT LOOP
 # ============================================================
 
-async def _inject_section(run_id: str, gc, bundle_changes):
-    """Background injection for an approved section. Runs concurrently with reviews."""
-    try:
-        await manager.broadcast({
-            "type": "AGENT_STATE", "run_id": run_id, "state": "STORING"
-        })
-        result = await asyncio.to_thread(
-            injector.inject_approved_content,
-            content=gc,
-            author="web_agent",
-            comment=f"Approved via UI - {len(bundle_changes)} DB change(s)"
-        )
-        log.info(
-            f"✅ Injected section {gc.section_number} "
-            f"- Version {result.version_created}"
-        )
-        if result.errors:
-            log.error(f"⚠️ Injection errors: {result.errors}")
-    except Exception as e:
-        log.error(f"Injection failed for {gc.section_number}: {e}", exc_info=True)
+async def _inject_all_sections(run_id: str, approved_contents: list, bundle_changes):
+    """Silently inject all approved sections to Neo4j in the background.
+
+    Runs AFTER PDF generation, while the user is examining the final PDFs.
+    No WebSocket broadcasts — completely invisible to the UI.
+    """
+    for gc in approved_contents:
+        try:
+            result = await asyncio.to_thread(
+                injector.inject_approved_content,
+                content=gc,
+                author="web_agent",
+                comment=f"Approved via UI - {len(bundle_changes)} DB change(s)"
+            )
+            log.info(
+                f"✅ Injected section {gc.section_number} "
+                f"- Version {result.version_created}"
+            )
+            if result.errors:
+                log.error(f"⚠️ Injection errors for {gc.section_number}: {result.errors}")
+        except Exception as e:
+            log.error(f"Injection failed for {gc.section_number}: {e}", exc_info=True)
 
 
 async def autonomous_agent_loop():
@@ -276,7 +277,7 @@ async def autonomous_agent_loop():
 
             if bundles:
                 for bundle in bundles:
-                    run_id = f"run_{bundle.product_code}_{int(asyncio.get_event_loop().time())}"
+                    run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
 
                     db_changes = serialize_db_changes(bundle)
 
@@ -303,8 +304,7 @@ async def autonomous_agent_loop():
 
                     if plans:
                         approved_sections = []
-                        injection_tasks   = []
-                        total_plans       = len(plans)
+                        approved_contents = []   # GeneratedContent objects for deferred Neo4j injection
 
                         # ── STAGE A: Generate ALL content in parallel ──
                         await manager.broadcast({
@@ -336,7 +336,8 @@ async def autonomous_agent_loop():
                             })
                             continue  # skip to next bundle
 
-                        # ── STAGE B: Feed reviews one-at-a-time (pipelined) ──
+                        # ── STAGE B: Feed reviews one-at-a-time ──
+                        # No injection here — just collect approved sections.
                         for idx, (plan, generated_content) in enumerate(review_queue, start=1):
                             review_id = f"{run_id}_{plan.section_number}"
 
@@ -371,16 +372,18 @@ async def autonomous_agent_loop():
                                 )
                                 review_decisions[review_id] = "REJECT"
                                 await manager.broadcast({
-                                    "type":    "WORKFLOW_REJECTED",
+                                    "type":    "PLAN_REJECTED",
                                     "run_id":  run_id,
+                                    "section": plan.section_number,
                                     "message": (
                                         f"Review timed out after 5 minutes. "
                                         f"Section {plan.section_number} auto-rejected."
                                     )
                                 })
+                            finally:
+                                pending_reviews.pop(review_id, None)
 
                             decision = review_decisions.pop(review_id, "REJECT")
-                            pending_reviews.pop(review_id, None)
 
                             if decision == "APPROVE":
                                 generated_content.status = "APPROVED"
@@ -390,76 +393,71 @@ async def autonomous_agent_loop():
                                     title=generated_content.section_title,
                                     content=generated_content.generated_text,
                                 ))
+                                approved_contents.append(generated_content)
 
-                                # Fire injection in background — next review is served immediately
-                                injection_tasks.append(
-                                    asyncio.create_task(
-                                        _inject_section(run_id, generated_content, bundle.changes)
-                                    )
-                                )
+                                await manager.broadcast({
+                                    "type":    "PLAN_APPROVED",
+                                    "run_id":  run_id,
+                                    "section": plan.section_number,
+                                    "message": f"Update for {plan.section_number} approved."
+                                })
 
-                                log.info(f"Override Granted for {plan.section_number}. Injecting in background...")
+                                log.info(f"Override Granted for {plan.section_number}.")
 
                             else:
                                 generated_content.status = "REJECTED"
                                 await manager.broadcast({
-                                    "type":    "WORKFLOW_REJECTED",
+                                    "type":    "PLAN_REJECTED",
                                     "run_id":  run_id,
+                                    "section": plan.section_number,
                                     "message": f"Update for {plan.section_number} was rejected by user."
                                 })
 
-                        # ── STAGE C: Wait for all background injections ──
-                        if injection_tasks:
-                            await asyncio.gather(*injection_tasks)
+                        # ── STAGE C: All reviews done ──
 
-                        # --- All rejected: no sections were approved ---
                         if not approved_sections:
-                            log.info(f"All plans rejected for run {run_id} — broadcasting WORKFLOW_ALL_REJECTED")
+                            log.info(f"All plans rejected for run {run_id}")
                             await manager.broadcast({
                                 "type":   "WORKFLOW_ALL_REJECTED",
                                 "run_id": run_id,
                             })
+                            continue  # skip to next bundle
 
-                        # --- Generate PDF if any sections were approved ---
-                        if approved_sections:
-                            try:
-                                await manager.broadcast({
-                                    "type":   "AGENT_STATE",
-                                    "run_id": run_id,
-                                    "state":  "COMPILING_PDF"
-                                })
+                        # ── STAGE D: Generate PDF (user sees this) ──
+                        try:
+                            await manager.broadcast({
+                                "type":   "AGENT_STATE",
+                                "run_id": run_id,
+                                "state":  "COMPILING_PDF"
+                            })
 
-                                registry_entry = next(
-                                    (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
-                                    None
+                            registry_entry = next(
+                                (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
+                                None
+                            )
+
+                            if registry_entry:
+                                manifest = EngineManifest.from_registry(registry_entry)
+                                pdf_path = await asyncio.to_thread(
+                                    generate_updated_dossier,
+                                    manifest,
+                                    approved_sections
                                 )
 
-                                if registry_entry:
-                                    manifest = EngineManifest.from_registry(registry_entry)
-                                    pdf_path = await asyncio.to_thread(
-                                        generate_updated_dossier,
-                                        manifest,
-                                        approved_sections
-                                    )
+                                log.info(f"✅ PDF generated: {pdf_path}")
 
-                                    log.info(f"✅ PDF generated: {pdf_path}")
+                                original_pdf_name = Path(manifest.pdf_path).name
+                                new_pdf_name      = pdf_path.name
 
-                                    original_pdf_name = Path(manifest.pdf_path).name
-                                    new_pdf_name      = pdf_path.name
-
-                                    await manager.broadcast({
-                                        "type":         "WORKFLOW_COMPLETE",
-                                        "run_id":       run_id,
-                                        "product_code": bundle.product_code,
-                                        # FIX: Routed to the /view/ subdirectory
-                                        "original_pdf": f"/dossiers/view/{original_pdf_name}", 
-                                        "new_pdf":      f"/pdfs/{new_pdf_name}"
-                                    })
-                                else:
-                                    log.error(f"Product {bundle.product_code} not found in registry")
-
-                            except Exception as e:
-                                log.error(f"PDF generation failed: {e}", exc_info=True)
+                                await manager.broadcast({
+                                    "type":         "WORKFLOW_COMPLETE",
+                                    "run_id":       run_id,
+                                    "product_code": bundle.product_code,
+                                    "original_pdf": f"/dossiers/{original_pdf_name}",
+                                    "new_pdf":      f"/pdfs/{new_pdf_name}"
+                                })
+                            else:
+                                log.error(f"Product {bundle.product_code} not found in registry")
                                 await manager.broadcast({
                                     "type":         "WORKFLOW_COMPLETE",
                                     "run_id":       run_id,
@@ -467,6 +465,23 @@ async def autonomous_agent_loop():
                                     "original_pdf": "",
                                     "new_pdf":      ""
                                 })
+
+                        except Exception as e:
+                            log.error(f"PDF generation failed: {e}", exc_info=True)
+                            await manager.broadcast({
+                                "type":         "WORKFLOW_COMPLETE",
+                                "run_id":       run_id,
+                                "product_code": bundle.product_code,
+                                "original_pdf": "",
+                                "new_pdf":      ""
+                            })
+
+                        # ── STAGE E: Silent Neo4j injection (background) ──
+                        # User is now on the final view examining PDFs.
+                        # Inject approved content to the graph silently — no UI updates.
+                        asyncio.create_task(
+                            _inject_all_sections(run_id, approved_contents, bundle.changes)
+                        )
 
             await asyncio.sleep(10)
 

@@ -128,7 +128,7 @@ class EngineManifest(BaseModel):
     """
 
     product_code: str = Field(..., description="e.g. '1614322'")
-    product_name: str = Field(..., description="e.g. 'BEPANTHOL Face Day Cream'")
+    product_name: str = Field(..., description="e.g. 'Wellcare Face Day Cream'")
     version_code: str = Field(..., description="e.g. 'C.2.2-03'")
     regqual_code: str = Field(..., description="e.g. 'VV-REGQUAL-108834'")
     issue_date:   str = Field(..., description="ISO date string, e.g. '2022-03-24'")

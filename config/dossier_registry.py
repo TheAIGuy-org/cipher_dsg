@@ -23,7 +23,7 @@ class DossierManifest:
     pdf_filename: str            # filename inside data/dossiers/
     product_id: int              # Must match Products.ProductID in SQL DB
     product_code: str            # e.g. "1614322"
-    product_name: str            # e.g. "BEPANTHOL Face Day Cream"
+    product_name: str            # e.g. "Wellcare Face Day Cream"
     version_code: str            # e.g. "C.2.2-03"
     regqual_code: str            # e.g. "VV-REGQUAL-108834"
     issue_date: str              # ISO date string "YYYY-MM-DD"
@@ -48,7 +48,7 @@ DOSSIER_REGISTRY: list[DossierManifest] = [
         pdf_filename="face_day_cream_1614322.pdf",
         product_id=1,
         product_code="1614322",
-        product_name="BEPANTHOL Face Day Cream",
+        product_name="Wellcare Face Day Cream",
         version_code="C.2.2-03",
         regqual_code="VV-REGQUAL-108834",
         issue_date="2022-03-24",
@@ -61,7 +61,7 @@ DOSSIER_REGISTRY: list[DossierManifest] = [
         pdf_filename="lipstick_1614557.pdf",
         product_id=2,
         product_code="1614557",
-        product_name="BEPANTHOL Lipstick",
+        product_name="Wellcare Lipstick",
         version_code="C.2.2-02",
         regqual_code="VV-REGQUAL-206035",
         issue_date="2024-05-29",
@@ -74,7 +74,7 @@ DOSSIER_REGISTRY: list[DossierManifest] = [
         pdf_filename="cream_1600188.pdf",
         product_id=3,
         product_code="1600188",
-        product_name="BEPANTHOL Cream",
+        product_name="Wellcare Cream",
         version_code="C.2.2-01",
         regqual_code="VV-REGQUAL-191544",
         issue_date="2022-09-01",

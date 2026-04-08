@@ -48,6 +48,7 @@ Thumbs.db
 *.tmp
 *.bak
 code_dump.txt
+*.claude
 
 # ─── Local model ───────────────────────────────────
 models/
