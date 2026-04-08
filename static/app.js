@@ -22,6 +22,60 @@ const corePing    = document.getElementById('core-status-ping');
 
 
 // ============================================================
+// THEME TOGGLE
+// ============================================================
+
+function initTheme() {
+    const htmlElement = document.documentElement;
+    const savedTheme = localStorage.getItem('cipher-theme');
+    
+    if (savedTheme === 'light') {
+        htmlElement.classList.remove('dark');
+    } else {
+        // Default to dark theme
+        htmlElement.classList.add('dark');
+        localStorage.setItem('cipher-theme', 'dark');
+    }
+    updateThemeIcon();
+}
+
+function toggleTheme() {
+    const htmlElement = document.documentElement;
+    
+    if (htmlElement.classList.contains('dark')) {
+        // Switch to light
+        htmlElement.classList.remove('dark');
+        localStorage.setItem('cipher-theme', 'light');
+    } else {
+        // Switch to dark
+        htmlElement.classList.add('dark');
+        localStorage.setItem('cipher-theme', 'dark');
+    }
+    updateThemeIcon();
+}
+
+function updateThemeIcon() {
+    const sunIcon = document.getElementById('theme-icon-sun');
+    const moonIcon = document.getElementById('theme-icon-moon');
+    const isDark = document.documentElement.classList.contains('dark');
+    
+    if (isDark) {
+        // In dark mode: show SUN icon to switch to LIGHT
+        sunIcon?.classList.remove('hidden');
+        sunIcon?.classList.add('block');
+        moonIcon?.classList.add('hidden');
+        moonIcon?.classList.remove('block');
+    } else {
+        // In light mode: show MOON icon to switch to DARK
+        sunIcon?.classList.add('hidden');
+        sunIcon?.classList.remove('block');
+        moonIcon?.classList.remove('hidden');
+        moonIcon?.classList.add('block');
+    }
+}
+
+
+// ============================================================
 // SVG ICON CONSTANTS
 // ============================================================
 
@@ -34,6 +88,9 @@ const ICON_COMPRESS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="non
 // ============================================================
 
 async function init() {
+    // Initialize theme from localStorage
+    initTheme();
+    
     const expandBtn = document.getElementById('expand-btn');
     if (expandBtn) {
         expandBtn.innerHTML = ICON_EXPAND;
@@ -42,8 +99,8 @@ async function init() {
 
     const grid = document.getElementById('dossier-grid');
     grid.innerHTML = `
-        <div class="col-span-full flex flex-col items-center justify-center p-10 text-cyan-500/50">
-            <div class="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <div class="col-span-full flex flex-col items-center justify-center p-10 text-cyan-600 dark:text-cyan-500/50">
+            <div class="w-8 h-8 border-2 border-cyan-600 dark:border-cyan-500 border-t-transparent rounded-full animate-spin mb-4"></div>
             <p class="font-mono text-xs tracking-widest uppercase">Establishing secure link to Registry...</p>
         </div>
     `;
@@ -63,18 +120,18 @@ async function init() {
 
         globalDossiers.forEach(d => {
             grid.innerHTML += `
-                <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-6 rounded-xl hover:bg-slate-800/80 transition-all duration-300 border-l-2 border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
-                    <div class="absolute inset-0 bg-gradient-to-r from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-6 rounded-xl hover:bg-slate-800/80 dark:hover:bg-slate-800/80 transition-all duration-300 border-l-2 border-emerald-500/50 dark:border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
+                    <div class="absolute inset-0 bg-gradient-to-r from-emerald-500/5 dark:from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                     <div class="relative z-10">
                         <div class="flex justify-between items-start mb-2">
-                            <h3 class="font-bold text-white text-sm leading-tight group-hover:text-emerald-400 transition-colors">${d.name}</h3>
-                            <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            <h3 class="font-bold text-slate-900 dark:text-white text-sm leading-tight group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">${d.name}</h3>
+                            <svg class="w-5 h-5 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                         </div>
-                        <p class="text-[10px] font-mono text-slate-400">ID: ${d.product_code}</p>
+                        <p class="text-[10px] font-mono text-slate-600 dark:text-slate-400">ID: ${d.product_code}</p>
                     </div>
                     <div class="mt-4 flex items-center gap-2 relative z-10">
-                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399]"></span>
-                        <span class="text-[10px] uppercase tracking-widest text-emerald-400/80 font-mono">Secured</span>
+                        <span class="w-1.5 h-1.5 bg-emerald-500 dark:bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399]"></span>
+                        <span class="text-[10px] uppercase tracking-widest text-emerald-600 dark:text-emerald-400/80 font-mono">Secured</span>
                     </div>
                 </div>
             `;
@@ -108,10 +165,10 @@ async function init() {
     } catch (error) {
         console.error("Failed to load dossiers:", error);
         grid.innerHTML = `
-            <div class="col-span-full glass-panel border-rose-500/30 p-6 rounded-xl text-rose-400 font-mono text-sm flex flex-col items-center text-center">
-                <svg class="w-8 h-8 mb-3 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            <div class="col-span-full glass-panel border-rose-500/30 dark:border-rose-500/30 p-6 rounded-xl text-rose-600 dark:text-rose-400 font-mono text-sm flex flex-col items-center text-center">
+                <svg class="w-8 h-8 mb-3 text-rose-600 dark:text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                 CONNECTION FAILED<br>
-                <span class="text-slate-400 text-xs mt-2 uppercase tracking-widest">Ensure you are accessing via http://localhost:8000 and not a local file:// path.</span>
+                <span class="text-slate-600 dark:text-slate-400 text-xs mt-2 uppercase tracking-widest">Ensure you are accessing via http://localhost:8000 and not a local file:// path.</span>
             </div>
         `;
     }
@@ -297,15 +354,50 @@ function handleAgentEvent(data) {
         _reviewSubmitting = false;
         logToConsole(`PDF compiled for ${data.product_code}. Download ready.`, 'text-cyan-400');
         
-        document.getElementById('pdf-orig').src      = data.original_pdf;
-        document.getElementById('pdf-new').src       = data.new_pdf;
-        document.getElementById('download-btn').href = data.new_pdf;
+        // Show loading overlay before setting PDF sources
+        const loadingOverlay = document.getElementById('pdf-loading-overlay');
+        if (loadingOverlay) {
+            loadingOverlay.classList.remove('opacity-0');
+            loadingOverlay.classList.add('opacity-100');
+        }
+
+        const pdfOrig = document.getElementById('pdf-orig');
+        const pdfNew = document.getElementById('pdf-new');
+        const downloadBtn = document.getElementById('download-btn');
+
+        // Set up onload handlers to hide loading overlay
+        const hideLoadingOverlay = () => {
+            if (loadingOverlay && pdfOrig.src && pdfNew.src && pdfOrig.offsetHeight > 0 && pdfNew.offsetHeight > 0) {
+                setTimeout(() => {
+                    loadingOverlay.classList.add('opacity-0');
+                    loadingOverlay.classList.remove('opacity-100');
+                }, 300);
+            }
+        };
+
+        pdfOrig.onload = hideLoadingOverlay;
+        pdfNew.onload = hideLoadingOverlay;
+
+        // Set PDF sources
+        pdfOrig.src = data.original_pdf;
+        pdfNew.src = data.new_pdf;
+        downloadBtn.href = data.new_pdf;
         
+        // Fallback timeout: hide loading overlay after 8 seconds even if PDFs don't load
+        setTimeout(() => {
+            if (loadingOverlay) {
+                loadingOverlay.classList.add('opacity-0');
+                loadingOverlay.classList.remove('opacity-100');
+            }
+        }, 8000);
+        
+        // Update status badge
         statusBadge.className = "font-mono px-4 py-1.5 bg-cyan-500/10 text-cyan-400 text-xs font-semibold rounded border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all duration-300";
         statusBadge.innerText = "[ SUCCESS : DOSSIER_COMPILED ]";
         coreDot.className     = "relative w-3 h-3 bg-cyan-400 rounded-full shadow-[0_0_8px_#22d3ee]";
         corePing.className    = "absolute w-full h-full bg-cyan-500 rounded-full animate-ping opacity-20";
 
+        // Switch to final view (shows with loading animation)
         switchView('final');
     }
 
@@ -394,9 +486,9 @@ function openDossierPreview(id) {
             : 'border-slate-500/30 opacity-60 hover:opacity-100 hover:bg-slate-800/50';
 
         dock.innerHTML += `
-            <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-4 rounded-xl transition-all duration-300 border-l-2 ${borderClass} flex flex-col gap-1">
-                <h3 class="font-bold text-white text-xs truncate">${d.name}</h3>
-                <p class="text-[10px] font-mono text-slate-400">ID: ${d.product_code}</p>
+            <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-4 rounded-xl transition-all duration-300 border-l-2 ${borderClass} flex flex-col gap-1 dossier-list-item">
+                <h3 class="font-bold text-slate-900 dark:text-white text-xs truncate">${d.name}</h3>
+                <p class="text-[10px] font-mono text-slate-700 dark:text-slate-400">ID: ${d.product_code}</p>
             </div>
         `;
     });
@@ -649,6 +741,18 @@ function resetToIdle() {
     statusBadge.innerText = "[ SYS_IDLE : LISTENING_TELEMETRY ]";
     coreDot.className     = "relative w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]";
     corePing.className    = "absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-20";
+
+    // Reset PDF sources and loading overlay for next workflow
+    const pdfOrig = document.getElementById('pdf-orig');
+    const pdfNew = document.getElementById('pdf-new');
+    const loadingOverlay = document.getElementById('pdf-loading-overlay');
+    
+    if (pdfOrig) pdfOrig.src = '';
+    if (pdfNew) pdfNew.src = '';
+    if (loadingOverlay) {
+        loadingOverlay.classList.remove('opacity-0');
+        loadingOverlay.classList.add('opacity-100');
+    }
 
     switchView('idle');
 }

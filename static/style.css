@@ -1,6 +1,7 @@
 /* static/style.css */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* === DARK THEME (DEFAULT) === */
 body {
     font-family: 'Inter', sans-serif;
     background-color: #020617;
@@ -8,6 +9,18 @@ body {
         linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
         linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
     background-size: 40px 40px;
+    color: #cbd5e1;
+    transition: background-color 0.5s ease, color 0.5s ease;
+}
+
+/* === LIGHT THEME === */
+html:not(.dark) body {
+    background-color: #f8fafc;
+    background-image:
+        linear-gradient(to right, rgba(51, 65, 85, 0.08) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(51, 65, 85, 0.08) 1px, transparent 1px);
+    background-size: 40px 40px;
+    color: #1e293b;
 }
 
 .font-mono {
@@ -21,6 +34,13 @@ body {
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+    transition: background 0.5s ease, border-color 0.5s ease;
+}
+
+html:not(.dark) .glass-panel {
+    background: rgba(248, 250, 252, 0.8);
+    border: 1px solid rgba(51, 65, 85, 0.1);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.08);
 }
 
 /* --- Animations & Glows --- */
@@ -59,7 +79,7 @@ body {
     }
 }
 
-/* --- Custom Dark Scrollbars --- */
+/* --- Custom Scrollbars (Dark Theme) --- */
 ::-webkit-scrollbar { 
     width: 6px; 
     height: 6px; 
@@ -70,10 +90,23 @@ body {
 }
 ::-webkit-scrollbar-thumb { 
     background: rgba(51, 65, 85, 0.8); 
-    border-radius: 4px; 
+    border-radius: 4px;
+    transition: background 0.3s ease;
 }
 ::-webkit-scrollbar-thumb:hover { 
     background: rgba(71, 85, 105, 1);
+}
+
+/* --- Custom Scrollbars (Light Theme) --- */
+html:not(.dark) ::-webkit-scrollbar-track { 
+    background: rgba(248, 250, 252, 0.5);
+}
+html:not(.dark) ::-webkit-scrollbar-thumb { 
+    background: rgba(148, 163, 184, 0.6); 
+    border-radius: 4px;
+}
+html:not(.dark) ::-webkit-scrollbar-thumb:hover { 
+    background: rgba(100, 116, 139, 0.8);
 }
 
 /* Custom Scrollbar specifically for Dock & Panels */
@@ -87,6 +120,11 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb { 
     background: rgba(51, 65, 85, 0.5); 
     border-radius: 4px;
+    transition: background 0.3s ease;
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb { 
+    background: rgba(148, 163, 184, 0.4); 
 }
 
 /* Smooth vertical scrolling for the console */
@@ -111,13 +149,25 @@ body {
     padding: 0.75rem;
     text-align: left;
 }
+html:not(.dark) .markdown-body th, html:not(.dark) .markdown-body td {
+    border: 1px solid rgba(15, 23, 42, 0.15);
+}
 .markdown-body th {
     background-color: rgba(255, 255, 255, 0.05);
     font-weight: 600;
     color: #e2e8f0;
+    transition: background-color 0.5s ease, color 0.5s ease;
+}
+html:not(.dark) .markdown-body th {
+    background-color: rgba(15, 23, 42, 0.08);
+    color: #1e293b;
 }
 .markdown-body tr:nth-child(even) {
     background-color: rgba(255, 255, 255, 0.02);
+    transition: background-color 0.5s ease;
+}
+html:not(.dark) .markdown-body tr:nth-child(even) {
+    background-color: rgba(15, 23, 42, 0.02);
 }
 .markdown-body ul {
     list-style-type: disc !important;
@@ -141,6 +191,10 @@ body {
     padding: 0.2rem 0.4rem;
     border-radius: 0.25rem;
     font-family: 'JetBrains Mono', monospace;
+    transition: background-color 0.5s ease;
+}
+html:not(.dark) .markdown-body code {
+    background: rgba(15, 23, 42, 0.1);
 }
 
 /* ============================================================
@@ -258,4 +312,41 @@ body {
 
 .overlay-exiting {
     animation: overlay-exit 0.6s ease forwards;
+}
+
+/* Dossier List Styling */
+.dossier-list {
+    color: #1e293b; /* Dark text for light theme */
+    font-weight: 500;
+    font-size: 1rem;
+    background-color: #ffffff; /* White background for light theme */
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+html:not(.dark) .dossier-list {
+    color: #1e293b; /* Ensure text is visible in light theme */
+    background-color: #f1f5f9; /* Light gray background for contrast */
+    border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.dossier-list-item {
+    margin-bottom: 8px;
+    padding: 8px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+html:not(.dark) .dossier-list-item {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.dossier-list-item:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+html:not(.dark) .dossier-list-item:hover {
+    background-color: rgba(0, 0, 0, 0.1);
 }
