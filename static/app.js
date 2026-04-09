@@ -279,6 +279,66 @@ function handleAgentEvent(data, bypassBuffer = false) {
         return;
     }
 
+    if (data.type === 'AUTO_ADVANCE') {
+        // Backend auto-advances when a product is fully rejected but bg_task
+        // for the next product is already running.  Switch UI context so the
+        // user isn't stuck on the rejected product's view.
+        if (multiProductMode) {
+            const nextIdx = productQueue.findIndex(
+                (p, i) => i > activeProductIndex && !['COMPLETE', 'REJECTED'].includes(p.state)
+            );
+            if (nextIdx !== -1) {
+                logToConsole('Auto-advancing to next product...', 'text-cyan-400');
+                switchToProduct(nextIdx);
+            }
+        }
+        return;
+    }
+
+    if (data.type === 'REVIEW_PHASE_COMPLETE') {
+        updateProductState(data);
+        renderProductIndicator();
+        logToConsole(`Review complete. Background compilation started.`, 'text-emerald-400');
+        // Briefly switch back to workflow to show transition to next product
+        switchView('workflow');
+        return;
+    }
+
+    if (data.type === 'ALL_REVIEWS_COMPLETE') {
+        logToConsole('All sections reviewed. Compiling dossiers...', 'text-emerald-400');
+        switchView('workflow');
+        return;
+    }
+
+    if (data.type === 'DISPLAY_PRODUCT') {
+        if (multiProductMode) {
+            const targetIdx = productQueue.findIndex(p => p.product_code === data.product_code);
+            if (targetIdx !== -1) {
+                activeProductIndex = targetIdx;
+                const product = productQueue[targetIdx];
+                const targetNameEl = document.getElementById('target-dossier-name');
+                if (targetNameEl) targetNameEl.innerText = product.product_name || product.product_code;
+                const wfProduct = document.getElementById('wf-product');
+                if (wfProduct) wfProduct.innerText = product.product_code;
+                renderProductIndicator();
+            }
+        }
+        // Show all pipeline steps as completed during display phase
+        const allSteps = ['POLLING', 'INTERPRETING', 'MAPPING', 'GENERATING', 'GRAPH_INJECTION', 'DOSSIER_GENERATION'];
+        allSteps.forEach(stepName => {
+            const stepEl = document.getElementById(`step-${stepName}`);
+            if (!stepEl) return;
+            const ring = stepEl.querySelector('.indicator-ring');
+            const textEl = stepEl.querySelector('span');
+            stepEl.className = "flex items-center gap-4 step-indicator opacity-100 transition-all duration-500";
+            if (textEl) textEl.className = "font-mono text-xs tracking-wider text-emerald-600 dark:text-emerald-400 transition-colors duration-300";
+            if (ring) ring.className = "w-4 h-4 rounded-full bg-emerald-500 border-2 border-emerald-500 dark:border-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.4)] z-10 indicator-ring transition-all duration-300";
+        });
+        switchView('workflow');
+        logToConsole(`Preparing dossier for ${data.product_code}...`, 'text-cyan-400');
+        return;
+    }
+
     if (data.type === 'PRODUCT_READY') {
         updateProductState(data);
         renderProductIndicator();
@@ -317,11 +377,13 @@ function handleAgentEvent(data, bypassBuffer = false) {
         coreDot.className     = "relative w-3 h-3 bg-rose-500 dark:bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
         corePing.className    = "absolute w-full h-full bg-rose-500 rounded-full animate-ping opacity-30";
 
+        const productName = (globalDossiers.find(d => d.product_code === data.product_code) || {}).name || data.product_code;
+
         const wfProduct = document.getElementById('wf-product');
         if (wfProduct) wfProduct.innerText = data.product_code;
 
         const targetDossierName = document.getElementById('target-dossier-name');
-        if (targetDossierName) targetDossierName.innerText = data.product_code;
+        if (targetDossierName) targetDossierName.innerText = productName;
 
         document.getElementById('wf-trigger').innerText = `${data.change_count} DB UPDATE(s)`;
 
@@ -334,7 +396,7 @@ function handleAgentEvent(data, bypassBuffer = false) {
     // --- AGENT STATE ---
     if (data.type === 'AGENT_STATE') {
 
-        const stepsOrder = ['POLLING', 'INTERPRETING', 'MAPPING', 'GENERATING', 'COMPILING_PDF'];
+        const stepsOrder = ['POLLING', 'INTERPRETING', 'MAPPING', 'GENERATING', 'GRAPH_INJECTION', 'DOSSIER_GENERATION'];
         const currentIndex = stepsOrder.indexOf(data.state);
 
         stepsOrder.forEach((stepName, index) => {
@@ -364,17 +426,18 @@ function handleAgentEvent(data, bypassBuffer = false) {
         });
 
         const stateMessages = {
-            POLLING:      'Scanning SQL change log for new events...',
-            INTERPRETING: 'LLM interpreting DB changes into regulatory concepts...',
-            MAPPING:      'Mapping concepts to affected dossier sections...',
-            GENERATING:   'Generating updated section content via LLM...',
-            COMPILING_PDF:'Compiling updated dossier PDF...',
+            POLLING:            'Scanning SQL change log for new events...',
+            INTERPRETING:       'Interpreting DB changes into regulatory concepts...',
+            MAPPING:            'Mapping concepts to affected dossier sections...',
+            GENERATING:         'Generating updated section content...',
+            GRAPH_INJECTION:    'Injecting approved content into knowledge graph...',
+            DOSSIER_GENERATION: 'Compiling updated dossier PDF...',
         };
 
         const msg = stateMessages[data.state] || `Protocol: ${data.state}...`;
         logToConsole(msg, 'text-cyan-300');
 
-        if (data.state === 'COMPILING_PDF' && currentViewName === 'review') {
+        if (data.state === 'GRAPH_INJECTION' && currentViewName === 'review') {
             switchView('workflow');
         }
     }
@@ -582,8 +645,10 @@ async function submitReview(decision) {
             } else {
                 logToConsole(`Section rejected.`, 'text-rose-400');
             }
+            // Safety: unlock after 10s if no WebSocket event resets the flag
+            setTimeout(() => { _reviewSubmitting = false; }, 10000);
         } else {
-            logToConsole(`ERROR: Failed to submit API decision.`, 'text-rose-500');
+            logToConsole(`ERROR: Failed to submit decision.`, 'text-rose-500');
             _reviewSubmitting = false;
         }
     } catch (error) {
@@ -909,17 +974,12 @@ function finishWorkflow() {
     if (multiProductMode) {
         const remaining = productQueue.filter(p => !['COMPLETE', 'REJECTED'].includes(p.state));
         if (remaining.length > 0) {
-            logToConsole('Advancing to next product...', 'text-cyan-400');
-            // Tell backend to unblock the next product's review loop
+            logToConsole('Advancing to next dossier...', 'text-cyan-400');
+            // Tell backend to unblock the next product in display phase
             fetch('/api/v1/workflow/advance', { method: 'POST' })
-                .catch(() => logToConsole('Error advancing workflow. Click [Next Product] again.', 'text-rose-500'));
-            // Switch UI to workflow view while waiting for next product's events
+                .catch(() => logToConsole('Error advancing workflow. Try again.', 'text-rose-500'));
+            // Show workflow/console view while backend sends DISPLAY_PRODUCT for next
             switchView('workflow');
-            // Advance active index to the next pending/processing product
-            const nextIdx = productQueue.findIndex((p, i) => i > activeProductIndex && !['COMPLETE', 'REJECTED'].includes(p.state));
-            if (nextIdx !== -1) {
-                switchToProduct(nextIdx);
-            }
             return;
         }
     }
@@ -981,6 +1041,7 @@ function updateProductState(data) {
     if (data.type === 'IMPACT_DETECTED')       p.state = 'PROCESSING';
     if (data.type === 'PRODUCT_READY')         p.state = 'AWAITING_REVIEW';
     if (data.type === 'REVIEW_REQUIRED')       p.state = 'IN_REVIEW';
+    if (data.type === 'REVIEW_PHASE_COMPLETE') p.state = 'REVIEW_DONE';
     if (data.type === 'WORKFLOW_COMPLETE')      p.state = 'COMPLETE';
     if (data.type === 'WORKFLOW_ALL_REJECTED')  p.state = 'REJECTED';
 }
@@ -998,6 +1059,7 @@ function renderProductIndicator() {
         'PROCESSING':        '<span class="text-cyan-400 animate-pulse">&#x25CF;</span>',
         'AWAITING_REVIEW':   '<span class="text-amber-400">&#x25CF;</span>',
         'IN_REVIEW':         '<span class="text-amber-400 animate-pulse">&#x25CF;</span>',
+        'REVIEW_DONE':       '<span class="text-emerald-400 opacity-60">&#x2713;</span>',
         'COMPLETE':          '<span class="text-emerald-400">&#x2713;</span>',
         'COMPLETE_PENDING_ADVANCE': '<span class="text-emerald-400">&#x2713;</span>',
         'REJECTED':          '<span class="text-rose-400">&#x2717;</span>',

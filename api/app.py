@@ -264,9 +264,9 @@ async def _safe_generate(p):
 
 
 async def _generate_for_product(bundle, queue_position: int, total_products: int):
-    """Run pipeline + LLM generation for a product in the background.
+    """Run pipeline + content generation for a product in the background.
 
-    Called while the user views the previous product's final PDF.
+    Called while the user reviews the previous product's sections.
     Results are stored in _background_generation for the main loop to pick up.
     """
     run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
@@ -315,12 +315,18 @@ async def _generate_for_product(bundle, queue_position: int, total_products: int
     })
 
 
-async def _inject_all_sections(run_id: str, approved_contents: list, bundle_changes):
-    """Silently inject all approved sections to Neo4j in the background.
+async def _build_and_inject(run_id: str, manifest, approved_sections, approved_contents, bundle_changes, broadcast_states: bool = True):
+    """Run graph injection followed by PDF generation.
 
-    Runs AFTER PDF generation, while the user is examining the final PDFs.
-    No WebSocket broadcasts — completely invisible to the UI.
+    When broadcast_states=True (single product), sends AGENT_STATE events so
+    the user sees steps 05_Graph_Injection and 06_Dossier_Generation.
+    When broadcast_states=False (multi-product background), runs silently.
+    Returns the generated PDF path.
     """
+    # --- Graph Injection ---
+    if broadcast_states:
+        await manager.broadcast({"type": "AGENT_STATE", "run_id": run_id, "state": "GRAPH_INJECTION"})
+
     for gc in approved_contents:
         try:
             result = await asyncio.to_thread(
@@ -329,24 +335,35 @@ async def _inject_all_sections(run_id: str, approved_contents: list, bundle_chan
                 author="web_agent",
                 comment=f"Approved via UI - {len(bundle_changes)} DB change(s)"
             )
-            log.info(
-                f"Injected section {gc.section_number} "
-                f"- Version {result.version_created}"
-            )
+            log.info(f"Injected section {gc.section_number} - Version {result.version_created}")
             if result.errors:
                 log.error(f"Injection errors for {gc.section_number}: {result.errors}")
         except Exception as e:
             log.error(f"Injection failed for {gc.section_number}: {e}", exc_info=True)
 
+    # --- Dossier PDF Generation ---
+    if broadcast_states:
+        await manager.broadcast({"type": "AGENT_STATE", "run_id": run_id, "state": "DOSSIER_GENERATION"})
+
+    pdf_path = await asyncio.to_thread(generate_updated_dossier, manifest, approved_sections)
+    log.info(f"PDF generated: {pdf_path}")
+    return pdf_path
+
 
 async def autonomous_agent_loop():
     """Runs continuously, polls DB, and drives the pipeline via WebSockets.
 
-    Multi-product support:
-      - Single bundle  -> identical to original behavior
-      - Multiple bundles -> staggered: Product N+1's LLM generation runs in the
-        background while the user views Product N's final PDF.  Only one product's
-        LLM calls run at a time (TPM-safe).
+    Multi-product staggered pipeline with global approval gate:
+      - P(N+1)'s generation overlaps P(N)'s human review (TPM-safe).
+      - PDF generation + graph injection start immediately after each review.
+      - NO PDF is displayed until ALL products are reviewed (global gate).
+      - Display phase shows PDFs in strict bundle order.
+      - Only one product's LLM calls run at a time.
+
+    Timeline (2 products):
+      P1: [gen] ──> [review] ──> [inject+PDF bg] ─────────────> DISPLAY PDF1
+      P2:      [gen bg] ──────> [review] ──> [inject+PDF bg] -> DISPLAY PDF2
+                                              ↑ ALL_REVIEWS_COMPLETE
     """
     log.info("Starting autonomous agent loop...")
 
@@ -356,10 +373,10 @@ async def autonomous_agent_loop():
 
             if bundles:
                 total = len(bundles)
-                bg_task = None  # tracks the one background generation task
+                is_multi = total > 1
+                bg_task = None
 
-                # Announce multi-product mode to frontend
-                if total > 1:
+                if is_multi:
                     log.info(f"Multi-product batch: {total} bundles detected")
                     await manager.broadcast({
                         "type":          "MULTI_PRODUCT_DETECTED",
@@ -367,16 +384,22 @@ async def autonomous_agent_loop():
                         "count":         total,
                     })
 
+                # Collect per-product outcomes for the display phase
+                # Each entry is dict (approved) or None (rejected/empty)
+                product_outcomes: List[Optional[dict]] = []
+
                 for idx, bundle in enumerate(bundles):
                     is_last = (idx == total - 1)
                     next_bundle = bundles[idx + 1] if not is_last else None
 
                     # -- Wait for background generation from previous iteration --
                     if bg_task is not None:
+                        if not bg_task.done():
+                            log.info(f"Waiting for background content generation for {bundle.product_code}...")
                         await bg_task
                         bg_task = None
 
-                    # -- Check if background already produced results --
+                    # -- Obtain content (pre-generated or inline) --
                     if bundle.product_code in _background_generation:
                         review_queue, db_changes, run_id = _background_generation.pop(bundle.product_code)
                         log.info(
@@ -384,7 +407,6 @@ async def autonomous_agent_loop():
                             f"(run_id={run_id}, sections={len(review_queue)})"
                         )
                     else:
-                        # -- Full pipeline + generation (same as single-product) --
                         run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
 
                         await manager.broadcast({
@@ -429,9 +451,27 @@ async def autonomous_agent_loop():
                         await manager.broadcast({
                             "type": "WORKFLOW_ALL_REJECTED", "run_id": run_id,
                         })
-                        continue  # next bundle processes from scratch
+                        product_outcomes.append(None)
+                        if is_multi and not is_last:
+                            await asyncio.sleep(2.5)
+                            await manager.broadcast({
+                                "type": "AUTO_ADVANCE",
+                                "run_id": run_id,
+                                "next_product_code": next_bundle.product_code if next_bundle else None,
+                            })
+                        continue
 
-                    # -- STAGE B: Feed reviews one-at-a-time --
+                    # -- Stagger: kick off NEXT product's generation BEFORE review --
+                    if is_multi and next_bundle:
+                        log.info(
+                            f"Stagger: starting background generation for "
+                            f"{next_bundle.product_code} while {bundle.product_code} enters review"
+                        )
+                        bg_task = asyncio.create_task(
+                            _generate_for_product(next_bundle, idx + 1, total)
+                        )
+
+                    # -- Feed reviews one-at-a-time --
                     approved_sections = []
                     approved_contents = []
 
@@ -506,45 +546,99 @@ async def autonomous_agent_loop():
                                 "message": f"Update for {plan.section_number} was rejected by user."
                             })
 
-                    # -- STAGE C: All reviews done --
+                    # -- All reviews done for this product --
                     if not approved_sections:
                         log.info(f"All plans rejected for run {run_id}")
                         product_states[run_id] = "REJECTED"
                         await manager.broadcast({
                             "type": "WORKFLOW_ALL_REJECTED", "run_id": run_id,
                         })
-                        continue  # next bundle processes from scratch
+                        product_outcomes.append(None)
+                        if is_multi and not is_last:
+                            await asyncio.sleep(2.5)
+                            await manager.broadcast({
+                                "type": "AUTO_ADVANCE",
+                                "run_id": run_id,
+                                "next_product_code": next_bundle.product_code if next_bundle else None,
+                            })
+                        continue
 
-                    # -- STAGE D: Generate PDF --
-                    try:
-                        await manager.broadcast({
-                            "type": "AGENT_STATE", "run_id": run_id, "state": "COMPILING_PDF"
-                        })
+                    # -- Post-review: graph injection + PDF generation --
+                    registry_entry = next(
+                        (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
+                        None
+                    )
 
-                        registry_entry = next(
-                            (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
-                            None
-                        )
-
+                    if is_multi:
+                        # ── MULTI-PRODUCT: fire-and-forget in background ──
+                        # PDF + injection run while the next product is reviewed.
+                        # Results collected for the display phase.
                         if registry_entry:
                             manifest = EngineManifest.from_registry(registry_entry)
-                            pdf_path = await asyncio.to_thread(
-                                generate_updated_dossier, manifest, approved_sections
+                            pdf_task = asyncio.create_task(
+                                _build_and_inject(
+                                    run_id, manifest, approved_sections,
+                                    approved_contents, bundle.changes,
+                                    broadcast_states=False,
+                                )
                             )
-                            log.info(f"PDF generated: {pdf_path}")
-
-                            original_pdf_name = Path(manifest.pdf_path).name
-                            new_pdf_name      = pdf_path.name
-
-                            await manager.broadcast({
-                                "type":         "WORKFLOW_COMPLETE",
-                                "run_id":       run_id,
-                                "product_code": bundle.product_code,
-                                "original_pdf": f"/dossiers/{original_pdf_name}",
-                                "new_pdf":      f"/pdfs/{new_pdf_name}"
-                            })
                         else:
                             log.error(f"Product {bundle.product_code} not found in registry")
+                            pdf_task = None
+
+                        product_outcomes.append({
+                            "run_id":         run_id,
+                            "product_code":   bundle.product_code,
+                            "pdf_task":       pdf_task,
+                            "registry_entry": registry_entry,
+                        })
+
+                        # --- NEW FIX: Tell UI this product's review is done ---
+                        await manager.broadcast({
+                            "type": "REVIEW_PHASE_COMPLETE",
+                            "run_id": run_id
+                        })
+                        
+                        # --- NEW FIX: Auto-advance to next product if not last ---
+                        if not is_last:
+                            await asyncio.sleep(1.0) # Brief pause for UX 
+                            await manager.broadcast({
+                                "type": "AUTO_ADVANCE",
+                                "run_id": run_id,
+                                "next_product_code": next_bundle.product_code if next_bundle else None,
+                            })
+
+                    else:
+                        # ── SINGLE PRODUCT: synchronous with state broadcasts ──
+                        try:
+                            if registry_entry:
+                                manifest = EngineManifest.from_registry(registry_entry)
+                                pdf_path = await _build_and_inject(
+                                    run_id, manifest, approved_sections,
+                                    approved_contents, bundle.changes,
+                                    broadcast_states=True,
+                                )
+                                original_pdf_name = Path(manifest.pdf_path).name
+                                new_pdf_name      = pdf_path.name
+
+                                await manager.broadcast({
+                                    "type":         "WORKFLOW_COMPLETE",
+                                    "run_id":       run_id,
+                                    "product_code": bundle.product_code,
+                                    "original_pdf": f"/dossiers/{original_pdf_name}",
+                                    "new_pdf":      f"/pdfs/{new_pdf_name}"
+                                })
+                            else:
+                                log.error(f"Product {bundle.product_code} not found in registry")
+                                await manager.broadcast({
+                                    "type":         "WORKFLOW_COMPLETE",
+                                    "run_id":       run_id,
+                                    "product_code": bundle.product_code,
+                                    "original_pdf": "",
+                                    "new_pdf":      ""
+                                })
+                        except Exception as e:
+                            log.error(f"PDF generation failed: {e}", exc_info=True)
                             await manager.broadcast({
                                 "type":         "WORKFLOW_COMPLETE",
                                 "run_id":       run_id,
@@ -553,39 +647,87 @@ async def autonomous_agent_loop():
                                 "new_pdf":      ""
                             })
 
-                    except Exception as e:
-                        log.error(f"PDF generation failed: {e}", exc_info=True)
-                        await manager.broadcast({
-                            "type":         "WORKFLOW_COMPLETE",
-                            "run_id":       run_id,
-                            "product_code": bundle.product_code,
-                            "original_pdf": "",
-                            "new_pdf":      ""
-                        })
-
-                    # -- STAGE E: Silent Neo4j injection (background) --
-                    asyncio.create_task(
-                        _inject_all_sections(run_id, approved_contents, bundle.changes)
-                    )
-
-                    # -- STAGE F: Multi-product stagger --
-                    # Start next product's generation while user views this PDF,
-                    # then gate the for-loop until user clicks [Next Product].
-                    if total > 1 and next_bundle:
-                        product_states[run_id] = "COMPLETE_PENDING_ADVANCE"
-                        bg_task = asyncio.create_task(
-                            _generate_for_product(next_bundle, idx + 1, total)
-                        )
-                        advance_event = asyncio.Event()
-                        foreground_gates[run_id] = advance_event
-                        await advance_event.wait()
-                        foreground_gates.pop(run_id, None)
-                        product_states[run_id] = "COMPLETE"
-
-                # -- Cleanup multi-product state --
-                if total > 1:
+                # ============================================================
+                # MULTI-PRODUCT DISPLAY PHASE
+                # Global gate: all reviews complete → show PDFs in order
+                # ============================================================
+                if is_multi:
                     if bg_task is not None:
                         await bg_task
+
+                    displayable = [p for p in product_outcomes if p is not None]
+
+                    if displayable:
+                        await manager.broadcast({
+                            "type":          "ALL_REVIEWS_COMPLETE",
+                            "product_codes": [p["product_code"] for p in displayable],
+                            "count":         len(displayable),
+                        })
+
+                        for d_idx, product_info in enumerate(displayable):
+                            d_is_last = (d_idx == len(displayable) - 1)
+                            d_run_id         = product_info["run_id"]
+                            d_pdf_task       = product_info["pdf_task"]
+                            d_registry_entry = product_info["registry_entry"]
+
+                            # Tell frontend which product to focus on
+                            await manager.broadcast({
+                                "type":          "DISPLAY_PRODUCT",
+                                "run_id":        d_run_id,
+                                "product_code":  product_info["product_code"],
+                                "display_index": d_idx,
+                                "display_total": len(displayable),
+                            })
+
+                            if d_pdf_task:
+                                try:
+                                    if not d_pdf_task.done():
+                                        await manager.broadcast({
+                                            "type": "AGENT_STATE",
+                                            "run_id": d_run_id,
+                                            "state": "DOSSIER_GENERATION",
+                                        })
+
+                                    pdf_path = await d_pdf_task
+                                    original_pdf_name = Path(d_registry_entry.pdf_path).name if d_registry_entry else ""
+                                    new_pdf_name      = pdf_path.name if pdf_path else ""
+
+                                    await manager.broadcast({
+                                        "type":         "WORKFLOW_COMPLETE",
+                                        "run_id":       d_run_id,
+                                        "product_code": product_info["product_code"],
+                                        "original_pdf": f"/dossiers/{original_pdf_name}" if original_pdf_name else "",
+                                        "new_pdf":      f"/pdfs/{new_pdf_name}" if new_pdf_name else "",
+                                    })
+                                except Exception as e:
+                                    log.error(f"PDF generation failed for {product_info['product_code']}: {e}", exc_info=True)
+                                    await manager.broadcast({
+                                        "type":         "WORKFLOW_COMPLETE",
+                                        "run_id":       d_run_id,
+                                        "product_code": product_info["product_code"],
+                                        "original_pdf": "",
+                                        "new_pdf":      "",
+                                    })
+                            else:
+                                # No PDF task (registry miss) — send empty completion
+                                await manager.broadcast({
+                                    "type":         "WORKFLOW_COMPLETE",
+                                    "run_id":       d_run_id,
+                                    "product_code": product_info["product_code"],
+                                    "original_pdf": "",
+                                    "new_pdf":      "",
+                                })
+
+                            # Gate until user clicks [Next Product] (except last)
+                            if not d_is_last:
+                                product_states[d_run_id] = "COMPLETE_PENDING_ADVANCE"
+                                advance_event = asyncio.Event()
+                                foreground_gates[d_run_id] = advance_event
+                                await advance_event.wait()
+                                foreground_gates.pop(d_run_id, None)
+                                product_states[d_run_id] = "COMPLETE"
+
+                    # Cleanup
                     await manager.broadcast({"type": "ALL_PRODUCTS_COMPLETE"})
                     product_states.clear()
                     foreground_gates.clear()
