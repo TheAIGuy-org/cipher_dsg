@@ -49,6 +49,7 @@ Thumbs.db
 *.bak
 code_dump.txt
 *.claude
+claude_chat
 
 # ─── Local model ───────────────────────────────────
 models/

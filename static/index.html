@@ -21,7 +21,7 @@
         }
     </script>
 </head>
-<body class="text-slate-300 dark:text-slate-300 h-screen flex flex-col overflow-hidden selection:bg-cyan-500/30 dark:selection:bg-cyan-500/30">
+<body class="text-slate-300 dark:text-slate-300 h-screen flex flex-col overflow-hidden selection:bg-cyan-500/30 dark:selection:bg-cyan-500/30 transition-colors duration-500">
 
     <header class="glass-panel px-6 py-4 flex justify-between items-center z-50 sticky top-0 transition-colors duration-500">
         <div class="flex items-center gap-4">
@@ -30,8 +30,12 @@
                 <div id="core-status-dot" class="relative w-3 h-3 bg-emerald-600 dark:bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]"></div>
             </div>
             <div>
-                <h1 class="text-xl font-bold text-slate-900 dark:text-white tracking-wide">DOSSIER <span class="text-cyan-500 dark:text-cyan-400">Auto-Pilot</span></h1>
-                <p class="text-[10px] uppercase tracking-widest text-slate-600 dark:text-slate-400 font-mono">Autonomous Regulatory Agent</p>
+                <h1 class="text-xl font-bold text-slate-900 dark:text-white tracking-wide flex items-center">
+                    <span>DOSSIER <span class="text-cyan-600 dark:text-cyan-400">Auto-Pilot</span></span>
+                    <span class="text-slate-300 dark:text-slate-700 font-light mx-3">|</span>
+                    <span id="target-dossier-name" class="text-sm font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">Listening...</span>
+                </h1>
+                <p class="text-[10px] uppercase tracking-widest text-slate-500 dark:text-slate-400 font-mono">Autonomous Regulatory Agent</p>
             </div>
         </div>
         <div class="flex items-center gap-4">
@@ -43,7 +47,8 @@
                     <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
                 </svg>
             </button>
-            <div id="status-badge" class="font-mono px-4 py-1.5 bg-emerald-400/10 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs font-semibold rounded border border-emerald-600/30 dark:border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-300">
+            <div id="product-indicator" class="hidden font-mono text-xs flex items-center gap-1.5"></div>
+            <div id="status-badge" class="font-mono px-4 py-1.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs font-semibold rounded border border-emerald-200 dark:border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-300">
                 [ SYS_IDLE : LISTENING_TELEMETRY ]
             </div>
         </div>
@@ -53,17 +58,17 @@
 
         <div id="view-idle" class="absolute inset-0 p-8 flex flex-col transition-all duration-700">
             <div class="flex items-center gap-3 mb-8">
-                <div class="w-1 h-6 bg-cyan-500 rounded shadow-[0_0_8px_#06b6d4]"></div>
+                <div class="w-1 h-6 bg-cyan-600 dark:bg-cyan-500 rounded shadow-[0_0_8px_#06b6d4]"></div>
                 <h2 class="text-2xl font-light text-slate-900 dark:text-white tracking-wide">Secured <span class="font-semibold">Dossiers</span></h2>
             </div>
             <div id="dossier-grid" class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-6 pb-10 transition-all duration-500 w-full"></div>
             
             <div id="dossier-preview" class="hidden absolute inset-0 top-24 left-8 right-8 bottom-8 flex gap-6 transition-all duration-500 opacity-0 translate-y-4">
                 <div id="dossier-dock" class="w-1/4 xl:w-1/5 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar"></div>
-                <div class="flex-1 glass-panel rounded-xl flex flex-col overflow-hidden relative border border-cyan-500/20 shadow-[0_0_20px_rgba(6,182,212,0.1)]">
-                    <div class="bg-slate-800/80 dark:bg-slate-800/80 px-6 py-4 border-b border-white/5 dark:border-white/5 flex justify-between items-center z-10 backdrop-blur-sm">
+                <div class="flex-1 glass-panel rounded-xl flex flex-col overflow-hidden relative border border-cyan-200 dark:border-cyan-500/20 shadow-[0_0_20px_rgba(6,182,212,0.1)]">
+                    <div class="bg-white/80 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-100 dark:border-white/5 flex justify-between items-center z-10 backdrop-blur-sm">
                         <h3 id="preview-title" class="font-bold text-slate-900 dark:text-white text-lg">Document Preview</h3>
-                        <button onclick="closeDossierPreview()" class="text-slate-600 dark:text-slate-400 hover:text-rose-400 transition-colors focus:outline-none">
+                        <button onclick="closeDossierPreview()" class="text-slate-500 dark:text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition-colors focus:outline-none">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
                     </div>
@@ -77,71 +82,76 @@
             <div class="w-1/2 flex flex-col gap-6">
                 <div class="glass-panel p-6 rounded-xl relative overflow-hidden flex flex-col">
                     <div class="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-500/5 to-transparent animate-[pulse_3s_ease-in-out_infinite]"></div>
-                    <h3 class="text-xs uppercase font-mono tracking-widest text-slate-600 dark:text-slate-400 mb-6">Live Threat Topology</h3>
+                    <h3 class="text-xs uppercase font-mono tracking-widest text-slate-500 dark:text-slate-400 mb-6">Live Change Topology</h3>
                     <div class="flex items-center justify-between relative z-10">
                         <div class="flex flex-col items-center w-1/3">
-                            <div class="w-12 h-12 rounded-full bg-rose-500/20 border border-rose-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(244,63,94,0.3)]">
-                                <svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
+                            <div class="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-500/20 border border-rose-200 dark:border-rose-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(244,63,94,0.1)] dark:shadow-[0_0_15px_rgba(244,63,94,0.3)]">
+                                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
                             </div>
-                            <span class="text-[10px] text-slate-600 dark:text-slate-400 uppercase tracking-wider text-center">SQL Trigger</span>
+                            <span class="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">SQL Trigger</span>
                             <span id="wf-trigger" class="text-sm font-medium text-slate-900 dark:text-white text-center mt-1">Change Detected</span>
                         </div>
                         <div class="flex-1 flex items-center justify-center opacity-50">
-                            <div class="w-full h-px bg-gradient-to-r from-rose-500/50 via-cyan-500/50 to-emerald-500/50 relative">
-                                <div class="absolute right-0 top-1/2 -mt-1 w-2 h-2 border-t-2 border-r-2 border-emerald-400 transform rotate-45"></div>
+                            <div class="w-full h-px bg-gradient-to-r from-rose-400/50 via-cyan-500/50 to-emerald-500/50 relative">
+                                <div class="absolute right-0 top-1/2 -mt-1 w-2 h-2 border-t-2 border-r-2 border-emerald-500 dark:border-emerald-400 transform rotate-45"></div>
                             </div>
                         </div>
                         <div class="flex flex-col items-center w-1/3">
-                            <div class="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(6,182,212,0.3)]">
-                                <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <div class="w-12 h-12 rounded-full bg-cyan-50 dark:bg-cyan-500/20 border border-cyan-200 dark:border-cyan-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(6,182,212,0.1)] dark:shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+                                <svg class="w-5 h-5 text-cyan-600 dark:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                             </div>
-                            <span class="text-[10px] text-slate-600 dark:text-slate-400 uppercase tracking-wider text-center">Extracted Concept</span>
+                            <span class="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Extracted Concept</span>
                             <span class="text-sm font-medium text-slate-900 dark:text-white text-center mt-1">Regulatory Shift</span>
                         </div>
                         <div class="flex-1 flex items-center justify-center opacity-50">
                             <div class="w-full h-px bg-gradient-to-r from-cyan-500/50 to-emerald-500/50 relative">
-                                <div class="absolute right-0 top-1/2 -mt-1 w-2 h-2 border-t-2 border-r-2 border-emerald-400 transform rotate-45"></div>
+                                <div class="absolute right-0 top-1/2 -mt-1 w-2 h-2 border-t-2 border-r-2 border-emerald-500 dark:border-emerald-400 transform rotate-45"></div>
                             </div>
                         </div>
                         <div class="flex flex-col items-center w-1/3">
-                            <div class="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(16,185,129,0.3)]">
-                                <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            <div class="w-12 h-12 rounded-full bg-emerald-50 dark:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/50 flex items-center justify-center mb-3 shadow-[0_0_15px_rgba(16,185,129,0.1)] dark:shadow-[0_0_15px_rgba(16,185,129,0.3)]">
+                                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                             </div>
-                            <span class="text-[10px] text-slate-600 dark:text-slate-400 uppercase tracking-wider text-center">Target Dossier</span>
+                            <span class="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider text-center">Target Dossier</span>
                             <span id="wf-product" class="text-sm font-medium text-slate-900 dark:text-white text-center mt-1">Identifying...</span>
                         </div>
                     </div>
                 </div>
                 
                 <div class="glass-panel p-6 rounded-xl flex-1 flex flex-col gap-4">
-                    <h3 class="text-xs uppercase font-mono tracking-widest text-slate-600 dark:text-slate-400 mb-2">Execution Protocol</h3>
-                    <div class="flex flex-col justify-between flex-1 relative before:absolute before:inset-y-3 before:left-2 before:w-px before:bg-slate-400 dark:before:bg-slate-800">
+                    <h3 class="text-xs uppercase font-mono tracking-widest text-slate-500 dark:text-slate-400 mb-2">Execution Protocol</h3>
+                    <div class="flex flex-col justify-between flex-1 relative before:absolute before:inset-y-3 before:left-[7px] before:w-[2px] before:bg-slate-200 dark:before:bg-slate-800">
+                        
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-POLLING">
-                            <div class="w-4 h-4 rounded-full bg-slate-600 dark:bg-slate-800 border-2 border-slate-500 dark:border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300">01_POLL</span>
+                            <div class="w-4 h-4 rounded-full bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 z-10 indicator-ring transition-all duration-300"></div>
+                            <span class="font-mono text-xs tracking-wider text-slate-500 dark:text-slate-300 transition-colors duration-300">01_POLL</span>
                         </div>
+                        
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-INTERPRETING">
-                            <div class="w-4 h-4 rounded-full bg-slate-600 dark:bg-slate-800 border-2 border-slate-500 dark:border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300">02_INTERPRET</span>
+                            <div class="w-4 h-4 rounded-full bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 z-10 indicator-ring transition-all duration-300"></div>
+                            <span class="font-mono text-xs tracking-wider text-slate-500 dark:text-slate-300 transition-colors duration-300">02_INTERPRET</span>
                         </div>
+                        
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-MAPPING">
-                            <div class="w-4 h-4 rounded-full bg-slate-600 dark:bg-slate-800 border-2 border-slate-500 dark:border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300">03_MAP_SECTIONS</span>
+                            <div class="w-4 h-4 rounded-full bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 z-10 indicator-ring transition-all duration-300"></div>
+                            <span class="font-mono text-xs tracking-wider text-slate-500 dark:text-slate-300 transition-colors duration-300">03_MAP_SECTIONS</span>
                         </div>
+                        
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-GENERATING">
-                            <div class="w-4 h-4 rounded-full bg-slate-600 dark:bg-slate-800 border-2 border-slate-500 dark:border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300">04_GENERATE_LLM</span>
+                            <div class="w-4 h-4 rounded-full bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 z-10 indicator-ring transition-all duration-300"></div>
+                            <span class="font-mono text-xs tracking-wider text-slate-500 dark:text-slate-300 transition-colors duration-300">04_GENERATE_LLM</span>
                         </div>
+                        
                         <div class="flex items-center gap-4 step-indicator opacity-40 transition-all duration-500" id="step-COMPILING_PDF">
-                            <div class="w-4 h-4 rounded-full bg-slate-600 dark:bg-slate-800 border-2 border-slate-500 dark:border-slate-600 z-10 indicator-ring"></div>
-                            <span class="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300">05_COMPILE_PDF</span>
+                            <div class="w-4 h-4 rounded-full bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 z-10 indicator-ring transition-all duration-300"></div>
+                            <span class="font-mono text-xs tracking-wider text-slate-500 dark:text-slate-300 transition-colors duration-300">05_COMPILE_PDF</span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border border-cyan-500/20">
-                <div class="bg-slate-900/80 dark:bg-slate-900/80 px-4 py-3 border-b border-white/5 dark:border-white/5 flex items-center justify-between flex-shrink-0">
+            <div class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border border-slate-200 dark:border-cyan-500/20">
+                <div class="bg-slate-900/90 dark:bg-slate-900/80 px-4 py-3 border-b border-slate-800 dark:border-white/5 flex items-center justify-between flex-shrink-0">
                     <span class="font-mono text-xs text-slate-400">Agent Console Output</span>
                     <div class="flex gap-1.5">
                         <div class="w-2.5 h-2.5 rounded-full bg-rose-500/50"></div>
@@ -150,106 +160,106 @@
                     </div>
                 </div>
                 <div class="flex-1 text-[13px] p-6 bg-[#0a0f1c] flex flex-col justify-center overflow-hidden relative" id="console-output">
-                    </div>
+                </div>
             </div>
 
         </div>
 
         <div id="view-review" class="absolute inset-0 p-8 flex flex-col transition-all duration-700 hidden opacity-0 translate-y-4">
 
-            <div class="glass-panel border-amber-500/30 p-5 rounded-xl mb-4 flex justify-between items-center shadow-[0_0_20px_rgba(245,158,11,0.1)]">
+            <div class="glass-panel border-amber-200 dark:border-amber-500/30 p-5 rounded-xl mb-4 flex justify-between items-center shadow-[0_0_20px_rgba(245,158,11,0.05)] dark:shadow-[0_0_20px_rgba(245,158,11,0.1)]">
                 <div>
-                    <h2 class="text-xl font-bold text-amber-400 flex items-center gap-2">
+                    <h2 class="text-xl font-bold text-amber-600 dark:text-amber-400 flex items-center gap-2">
                         <svg class="w-5 h-5 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                         Human Override Required
                     </h2>
-                    <p class="text-sm text-slate-400 mt-1 font-mono">Agent paused. Validate generated structure before Neo4j injection.</p>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 font-mono">Agent paused. Validate generated structure before Neo4j injection.</p>
                 </div>
             </div>
 
             <div class="flex flex-1 overflow-hidden gap-4">
 
-                <div id="rev-reasoning-panel" class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-cyan-500/20 review-panel-transition">
-                    <div class="bg-cyan-500/10 px-4 py-3 border-b border-cyan-500/20 flex justify-between items-center flex-shrink-0">
-                        <span class="font-mono text-xs text-cyan-400 font-bold uppercase tracking-widest">Section & Reasoning</span>
-                        <span class="w-2 h-2 rounded-full bg-cyan-500"></span>
+                <div id="rev-reasoning-panel" class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-cyan-200 dark:border-cyan-500/20 review-panel-transition">
+                    <div class="bg-cyan-50 dark:bg-cyan-500/10 px-4 py-3 border-b border-cyan-100 dark:border-cyan-500/20 flex justify-between items-center flex-shrink-0">
+                        <span class="font-mono text-xs text-cyan-700 dark:text-cyan-400 font-bold uppercase tracking-widest">Section & Reasoning</span>
+                        <span class="w-2 h-2 rounded-full bg-cyan-600 dark:bg-cyan-500"></span>
                     </div>
 
                     <div class="p-6 overflow-y-auto flex-1 text-sm text-slate-700 dark:text-slate-300 custom-scrollbar">
                         <div class="mb-6">
-                            <div class="text-xs text-slate-600 dark:text-slate-500 font-mono uppercase tracking-widest mb-2">Target Section</div>
+                            <div class="text-xs text-slate-500 dark:text-slate-500 font-mono uppercase tracking-widest mb-2">Target Section</div>
                             <div class="text-xl font-bold text-slate-900 dark:text-white" id="rev-section-name"></div>
                         </div>
 
                         <div class="mb-6">
-                            <div class="text-xs text-slate-600 dark:text-slate-500 font-mono uppercase tracking-widest mb-2">Agent Reasoning</div>
+                            <div class="text-xs text-slate-500 dark:text-slate-500 font-mono uppercase tracking-widest mb-2">Agent Reasoning</div>
                             <div class="text-sm font-serif text-slate-700 dark:text-cyan-100 leading-relaxed italic" id="rev-reasoning"></div>
                         </div>
 
-                        <div class="border-t border-white/5 pt-5">
+                        <div class="border-t border-slate-200 dark:border-white/5 pt-5">
                             <div onclick="toggleEvidenceBlock()" class="flex items-center justify-between mb-3 cursor-pointer select-none group">
                                 <div class="flex items-center gap-2">
-                                    <span class="text-xs text-slate-600 dark:text-slate-500 font-mono uppercase tracking-widest group-hover:text-slate-700 dark:group-hover:text-slate-400 transition-colors duration-200">
+                                    <span class="text-xs text-slate-500 dark:text-slate-500 font-mono uppercase tracking-widest group-hover:text-slate-700 dark:group-hover:text-slate-400 transition-colors duration-200">
                                         DB Trigger Evidence
                                     </span>
-                                    <span id="evidence-count-badge" class="text-[10px] font-mono font-bold bg-slate-300 dark:bg-slate-700/80 text-slate-900 dark:text-slate-400 px-2 py-0.5 rounded-full border border-slate-400/50 dark:border-slate-600/50">0</span>
+                                    <span id="evidence-count-badge" class="text-[10px] font-mono font-bold bg-slate-200 dark:bg-slate-700/80 text-slate-700 dark:text-slate-400 px-2 py-0.5 rounded-full border border-slate-300 dark:border-slate-600/50">0</span>
                                 </div>
-                                <svg id="evidence-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-slate-500 group-hover:text-slate-400 transition-all duration-300 flex-shrink-0"><polyline points="6 9 12 15 18 9"/></svg>
+                                <svg id="evidence-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-400 transition-all duration-300 flex-shrink-0"><polyline points="6 9 12 15 18 9"/></svg>
                             </div>
                             <div id="evidence-cards-container"></div>
                         </div>
                     </div>
                 </div>
 
-                <div id="rev-content-panel" class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-emerald-500/20 review-panel-transition">
-                    <div class="relative bg-emerald-500/10 px-4 py-3 border-b border-emerald-500/20 flex items-center flex-shrink-0 h-[45px]">
-                        <span class="font-mono text-xs text-emerald-400 font-bold uppercase tracking-widest">Generated Content</span>
-                        <button id="expand-btn" onclick="toggleExpandReview()" title="Expand panel" class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-emerald-400 transition-colors duration-200 focus:outline-none"></button>
+                <div id="rev-content-panel" class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-emerald-200 dark:border-emerald-500/20 review-panel-transition">
+                    <div class="relative bg-emerald-50 dark:bg-emerald-500/10 px-4 py-3 border-b border-emerald-100 dark:border-emerald-500/20 flex items-center flex-shrink-0 h-[45px]">
+                        <span class="font-mono text-xs text-emerald-700 dark:text-emerald-400 font-bold uppercase tracking-widest">Generated Content</span>
+                        <button id="expand-btn" onclick="toggleExpandReview()" title="Expand panel" class="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors duration-200 focus:outline-none"></button>
                     </div>
 
-                    <div class="p-6 overflow-y-auto flex-1 font-serif text-sm text-slate-700 dark:text-emerald-50 leading-relaxed markdown-body bg-emerald-900/5 dark:bg-emerald-900/10 custom-scrollbar" id="rev-new"></div>
+                    <div class="p-6 overflow-y-auto flex-1 font-serif text-sm text-slate-700 dark:text-emerald-50 leading-relaxed markdown-body bg-white dark:bg-emerald-900/10 custom-scrollbar" id="rev-new"></div>
                 </div>
 
             </div>
 
             <div class="mt-6 flex justify-end gap-4">
-                <button onclick="submitReview('REJECT')" class="px-8 py-3 bg-rose-100 text-rose-700 border border-rose-400 rounded hover:bg-rose-700 hover:text-white hover:border-rose-700 transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_10px_rgba(244,63,94,0.2)] hover:shadow-[0_0_20px_rgba(244,63,94,0.4)] focus:outline-none focus:ring-2 focus:ring-rose-500/50 dark:bg-rose-100 dark:text-rose-700 dark:border-rose-400 dark:hover:bg-rose-700 dark:hover:text-white dark:hover:border-rose-700">
+                <button onclick="submitReview('REJECT')" class="px-8 py-3 bg-white dark:bg-rose-100 text-rose-600 dark:text-rose-700 border border-rose-300 dark:border-rose-400 rounded hover:bg-rose-50 dark:hover:bg-rose-700 hover:text-rose-700 dark:hover:text-white dark:hover:border-rose-700 transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_10px_rgba(244,63,94,0.1)] dark:shadow-[0_0_10px_rgba(244,63,94,0.2)] hover:shadow-[0_0_15px_rgba(244,63,94,0.2)] dark:hover:shadow-[0_0_20px_rgba(244,63,94,0.4)] focus:outline-none focus:ring-2 focus:ring-rose-500/50">
                     [ Reject & Drop ]
                 </button>
-                <button onclick="submitReview('APPROVE')" class="px-8 py-3 bg-emerald-600/20 dark:bg-emerald-600/20 border border-emerald-500 dark:border-emerald-500 text-emerald-700 dark:text-emerald-400 rounded hover:bg-emerald-500 dark:hover:bg-emerald-500 hover:text-white dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_15px_rgba(16,185,129,0.2)] dark:shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_20px_rgba(16,185,129,0.5)] dark:hover:shadow-[0_0_20px_rgba(16,185,129,0.5)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50">
+                <button onclick="submitReview('APPROVE')" class="px-8 py-3 bg-emerald-50 dark:bg-emerald-600/20 border border-emerald-300 dark:border-emerald-500 text-emerald-700 dark:text-emerald-400 rounded hover:bg-emerald-600 dark:hover:bg-emerald-500 hover:text-white dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_15px_rgba(16,185,129,0.1)] dark:shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] dark:hover:shadow-[0_0_20px_rgba(16,185,129,0.5)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50">
                     [ Approve & Inject ]
                 </button>
             </div>
         </div>
 
         <div id="view-final" class="absolute inset-0 p-8 flex flex-col transition-all duration-700 hidden opacity-0 translate-y-4">
-            <div class="glass-panel px-6 py-4 rounded-xl mb-4 flex justify-between items-center border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.1)]">
-                <h2 class="text-xl font-bold text-cyan-400">Compilation Successful</h2>
+            <div class="glass-panel px-6 py-4 rounded-xl mb-4 flex justify-between items-center border-cyan-200 dark:border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.05)] dark:shadow-[0_0_20px_rgba(6,182,212,0.1)]">
+                <h2 class="text-xl font-bold text-cyan-700 dark:text-cyan-400">Compilation Successful</h2>
                 <div class="flex items-center gap-4">
-                    <a id="download-btn" href="#" download class="px-6 py-2 bg-cyan-600/20 dark:bg-cyan-600/20 border border-cyan-500 dark:border-cyan-500 text-cyan-700 dark:text-cyan-400 rounded hover:bg-cyan-500 dark:hover:bg-cyan-500 hover:text-white dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider flex items-center gap-2 cursor-pointer">
+                    <a id="download-btn" href="#" download class="px-6 py-2 bg-white dark:bg-cyan-600/20 border border-cyan-300 dark:border-cyan-500 text-cyan-700 dark:text-cyan-400 rounded hover:bg-cyan-50 dark:hover:bg-cyan-500 hover:text-cyan-800 dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-sm">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                         Download PDF
                     </a>
-                    <button onclick="finishWorkflow()" class="px-8 py-2 bg-emerald-600/20 dark:bg-emerald-600/20 border border-emerald-500 dark:border-emerald-500 text-emerald-700 dark:text-emerald-400 rounded hover:bg-emerald-500 dark:hover:bg-emerald-500 hover:text-white dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_10px_rgba(16,185,129,0.2)] dark:shadow-[0_0_10px_rgba(16,185,129,0.2)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50">
+                    <button onclick="finishWorkflow()" class="px-8 py-2 bg-emerald-50 dark:bg-emerald-600/20 border border-emerald-300 dark:border-emerald-500 text-emerald-700 dark:text-emerald-400 rounded hover:bg-emerald-600 dark:hover:bg-emerald-500 hover:text-white dark:hover:text-white transition-all font-mono text-sm uppercase tracking-wider shadow-[0_0_10px_rgba(16,185,129,0.1)] dark:shadow-[0_0_10px_rgba(16,185,129,0.2)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50">
                         [ Home ]
                     </button>
                 </div>
             </div>
             <div class="flex flex-1 overflow-hidden gap-4 relative">
-                <!-- Loading Overlay for PDFs -->
-                <div id="pdf-loading-overlay" class="absolute inset-0 bg-black/40 backdrop-blur-sm z-40 flex flex-col items-center justify-center rounded-xl transition-opacity duration-500 opacity-100">
+                
+                <div id="pdf-loading-overlay" class="absolute inset-0 bg-white/60 dark:bg-black/40 backdrop-blur-sm z-40 flex flex-col items-center justify-center rounded-xl transition-opacity duration-500 opacity-100">
                     <div class="flex flex-col items-center gap-4">
-                        <div class="w-12 h-12 border-3 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin"></div>
-                        <p class="font-mono text-sm text-cyan-400 tracking-wider">Loading PDF documents...</p>
+                        <div class="w-12 h-12 border-3 border-cyan-200 dark:border-cyan-500/30 border-t-cyan-600 dark:border-t-cyan-500 rounded-full animate-spin"></div>
+                        <p class="font-mono text-sm text-cyan-700 dark:text-cyan-400 tracking-wider">Loading PDF documents...</p>
                     </div>
                 </div>
                 
                 <div class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden">
-                    <div class="bg-slate-800/50 dark:bg-slate-800/50 text-xs font-mono uppercase tracking-widest text-center py-2 text-slate-600 dark:text-slate-400 border-b border-white/5 dark:border-white/5">Baseline PDF</div>
+                    <div class="bg-slate-50 dark:bg-slate-800/50 text-xs font-mono uppercase tracking-widest text-center py-2 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-white/5">Baseline PDF</div>
                     <iframe id="pdf-orig" class="flex-1 w-full bg-white" src="" scrolling="yes"></iframe>
                 </div>
-                <div class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-cyan-500/20">
-                    <div class="bg-cyan-900/30 dark:bg-cyan-900/30 text-xs font-mono uppercase tracking-widest text-center py-2 text-cyan-700 dark:text-cyan-400 border-b border-cyan-500/20 dark:border-cyan-500/20">Updated PDF</div>
+                <div class="w-1/2 glass-panel rounded-xl flex flex-col overflow-hidden border-cyan-200 dark:border-cyan-500/20">
+                    <div class="bg-cyan-50 dark:bg-cyan-900/30 text-xs font-mono uppercase tracking-widest text-center py-2 text-cyan-700 dark:text-cyan-400 border-b border-cyan-200 dark:border-cyan-500/20">Updated PDF</div>
                     <iframe id="pdf-new" class="flex-1 w-full bg-white" src="" scrolling="yes"></iframe>
                 </div>
             </div>
@@ -263,10 +273,10 @@
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
             </svg>
-            <p class="font-mono text-xl font-bold tracking-widest text-slate-700" id="rejection-main-text">
+            <p class="font-mono text-xl font-bold tracking-widest text-slate-700 dark:text-slate-200" id="rejection-main-text">
                 NO CHANGES COMMITTED
             </p>
-            <p class="font-mono text-xs tracking-widest text-slate-400">
+            <p class="font-mono text-xs tracking-widest text-slate-500 dark:text-slate-400">
                 Returning to monitoring mode...
             </p>
         </div>

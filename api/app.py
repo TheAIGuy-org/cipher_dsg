@@ -24,7 +24,7 @@ app = FastAPI(title="Cipher DSG Autonomous Agent API")
 
 # ============================================================
 # CACHE BUSTING MIDDLEWARE
-# Strictly disables caching for development 
+# Strictly disables caching for development
 # ============================================================
 @app.middleware("http")
 async def add_no_cache_headers(request: Request, call_next):
@@ -70,7 +70,6 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        # Iterate over a copy so we can safely remove dead connections mid-loop
         dead = []
         for connection in list(self.active_connections):
             try:
@@ -91,6 +90,14 @@ manager = ConnectionManager()
 pending_reviews: Dict[str, asyncio.Event] = {}
 review_decisions: Dict[str, str] = {}
 
+# --- Multi-product staggered pipeline state ---
+product_states: Dict[str, str] = {}                # run_id -> GENERATING|AWAITING_REVIEW|IN_REVIEW|COMPLETE|REJECTED
+foreground_gates: Dict[str, asyncio.Event] = {}    # run_id -> Event, set when user clicks [Next Product]
+_background_generation: Dict[str, tuple] = {}      # product_code -> (review_queue, db_changes, run_id)
+
+# --- State hydration: last REVIEW_REQUIRED payload for F5 recovery ---
+_active_review_payload: Optional[dict] = None
+
 # --- API Models ---
 class ReviewDecision(BaseModel):
     review_id: str
@@ -102,10 +109,7 @@ class ReviewDecision(BaseModel):
 # ============================================================
 
 def serialize_db_changes(bundle) -> List[Dict[str, Any]]:
-    """
-    Convert bundle.changes (List[DBChangeRecord]) into a list of
-    plain dicts safe for JSON broadcast over WebSocket.
-    """
+    """Convert bundle.changes (List[DBChangeRecord]) into a list of plain dicts."""
     def safe_str(val) -> Optional[str]:
         if val is None:
             return None
@@ -119,7 +123,7 @@ def serialize_db_changes(bundle) -> List[Dict[str, Any]]:
         for c in bundle.changes:
             log.debug(
                 f"  DB change: {c.operation_type} {c.source_table}.{c.column_name} "
-                f"| old={c.old_value!r} → new={c.new_value!r}"
+                f"| old={c.old_value!r} -> new={c.new_value!r}"
             )
             result.append({
                 "source_table":     safe_str(c.source_table),
@@ -138,7 +142,7 @@ def serialize_db_changes(bundle) -> List[Dict[str, Any]]:
 
 
 # ============================================================
-# CONCEPT → TABLE TAXONOMY MAP
+# CONCEPT -> TABLE TAXONOMY MAP
 # ============================================================
 
 CONCEPT_TO_TABLES: Dict[str, List[str]] = {
@@ -163,7 +167,6 @@ def get_relevant_changes(plan, all_changes: List[Dict[str, Any]]) -> List[Dict[s
     if not all_changes:
         return []
 
-    # Step 1 — collect implied tables from all concepts on this plan
     implied_tables: set = set()
     for cc in plan.concept_changes:
         concept_lower = cc.concept.lower()
@@ -175,11 +178,10 @@ def get_relevant_changes(plan, all_changes: List[Dict[str, Any]]) -> List[Dict[s
                 implied_tables.update(tables)
 
     log.debug(
-        f"get_relevant_changes: plan {plan.section_number} → "
+        f"get_relevant_changes: plan {plan.section_number} -> "
         f"implied tables={implied_tables}"
     )
 
-    # Step 2 — filter changes to implied tables
     if implied_tables:
         relevant = [
             c for c in all_changes
@@ -187,12 +189,11 @@ def get_relevant_changes(plan, all_changes: List[Dict[str, Any]]) -> List[Dict[s
         ]
         if relevant:
             log.info(
-                f"get_relevant_changes: {plan.section_number} → "
+                f"get_relevant_changes: {plan.section_number} -> "
                 f"{len(relevant)}/{len(all_changes)} matched via taxonomy"
             )
             return relevant
 
-    # Fallback — concept not in taxonomy or no records matched
     log.warning(
         f"get_relevant_changes: no taxonomy match for "
         f"{plan.section_number} concepts="
@@ -213,14 +214,13 @@ async def serve_ui():
 
 @app.get("/api/v1/dossiers")
 async def get_dossiers():
-    """Return available dossiers for View 1. Only includes entries whose PDF exists on disk."""
+    """Return available dossiers. Only includes entries whose PDF exists on disk."""
     result = []
     for d in DOSSIER_REGISTRY:
         if d.pdf_path.exists():
             result.append({
                 "product_code": d.product_code,
                 "name":         d.product_name,
-                # FIX: Routed to the /view/ subdirectory
                 "pdf_url":      f"/dossiers/{d.pdf_filename}"
             })
         else:
@@ -239,9 +239,81 @@ async def submit_review(decision: ReviewDecision):
     return {"status": "error", "message": "Review ID not found or already processed."}
 
 
+@app.post("/api/v1/workflow/advance")
+async def advance_to_next_product():
+    """User is done viewing the current product's PDF. Unblock the next product."""
+    for run_id, event in foreground_gates.items():
+        if not event.is_set():
+            event.set()
+            log.info(f"Advance signal received — unblocking after {run_id}")
+            return {"status": "success", "message": "Advancing to next product."}
+    return {"status": "noop", "message": "No product pending advance."}
+
+
 # ============================================================
 # BACKGROUND AUTONOMOUS AGENT LOOP
 # ============================================================
+
+async def _safe_generate(p):
+    """Generate content for a single plan, returning None on failure."""
+    try:
+        return await asyncio.to_thread(generator.generate_content, p)
+    except Exception as e:
+        log.error(f"Generation failed for {p.section_number}: {e}", exc_info=True)
+        return None
+
+
+async def _generate_for_product(bundle, queue_position: int, total_products: int):
+    """Run pipeline + LLM generation for a product in the background.
+
+    Called while the user views the previous product's final PDF.
+    Results are stored in _background_generation for the main loop to pick up.
+    """
+    run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
+    product_states[run_id] = "GENERATING"
+
+    await manager.broadcast({
+        "type":         "IMPACT_DETECTED",
+        "run_id":       run_id,
+        "product_code": bundle.product_code,
+        "change_count": bundle.get_change_count(),
+        "queue_position": queue_position,
+        "total_products": total_products,
+    })
+
+    for state in ["POLLING", "INTERPRETING", "MAPPING", "GENERATING"]:
+        await asyncio.sleep(1)
+        await manager.broadcast({
+            "type": "AGENT_STATE", "run_id": run_id, "state": state
+        })
+
+    plans = await asyncio.to_thread(pipeline.process_change_bundle, bundle)
+    db_changes = serialize_db_changes(bundle)
+
+    if plans:
+        await manager.broadcast({
+            "type": "AGENT_STATE", "run_id": run_id, "state": "GENERATING"
+        })
+        generated_results = await asyncio.gather(
+            *[_safe_generate(p) for p in plans]
+        )
+        review_queue = [
+            (plan, content)
+            for plan, content in zip(plans, generated_results)
+            if content is not None
+        ]
+        _background_generation[bundle.product_code] = (review_queue, db_changes, run_id)
+    else:
+        _background_generation[bundle.product_code] = ([], db_changes, run_id)
+
+    product_states[run_id] = "AWAITING_REVIEW"
+    await manager.broadcast({
+        "type":         "PRODUCT_READY",
+        "run_id":       run_id,
+        "product_code": bundle.product_code,
+        "queue_position": queue_position,
+    })
+
 
 async def _inject_all_sections(run_id: str, approved_contents: list, bundle_changes):
     """Silently inject all approved sections to Neo4j in the background.
@@ -258,17 +330,24 @@ async def _inject_all_sections(run_id: str, approved_contents: list, bundle_chan
                 comment=f"Approved via UI - {len(bundle_changes)} DB change(s)"
             )
             log.info(
-                f"✅ Injected section {gc.section_number} "
+                f"Injected section {gc.section_number} "
                 f"- Version {result.version_created}"
             )
             if result.errors:
-                log.error(f"⚠️ Injection errors for {gc.section_number}: {result.errors}")
+                log.error(f"Injection errors for {gc.section_number}: {result.errors}")
         except Exception as e:
             log.error(f"Injection failed for {gc.section_number}: {e}", exc_info=True)
 
 
 async def autonomous_agent_loop():
-    """Runs continuously, polls DB, and drives the pipeline via WebSockets."""
+    """Runs continuously, polls DB, and drives the pipeline via WebSockets.
+
+    Multi-product support:
+      - Single bundle  -> identical to original behavior
+      - Multiple bundles -> staggered: Product N+1's LLM generation runs in the
+        background while the user views Product N's final PDF.  Only one product's
+        LLM calls run at a time (TPM-safe).
+    """
     log.info("Starting autonomous agent loop...")
 
     while True:
@@ -276,198 +355,196 @@ async def autonomous_agent_loop():
             bundles = await asyncio.to_thread(poller.poll_once)
 
             if bundles:
-                for bundle in bundles:
-                    run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
+                total = len(bundles)
+                bg_task = None  # tracks the one background generation task
 
-                    db_changes = serialize_db_changes(bundle)
-
-                    # --- Impact Detected ---
+                # Announce multi-product mode to frontend
+                if total > 1:
+                    log.info(f"Multi-product batch: {total} bundles detected")
                     await manager.broadcast({
-                        "type":         "IMPACT_DETECTED",
-                        "run_id":       run_id,
-                        "product_code": bundle.product_code,
-                        "change_count": bundle.get_change_count()
+                        "type":          "MULTI_PRODUCT_DETECTED",
+                        "product_codes": [b.product_code for b in bundles],
+                        "count":         total,
                     })
 
-                    # --- Stream pipeline state steps for UI ---
-                    states = ["POLLING", "INTERPRETING", "MAPPING", "GENERATING"]
-                    for state in states:
-                        await asyncio.sleep(1)
+                for idx, bundle in enumerate(bundles):
+                    is_last = (idx == total - 1)
+                    next_bundle = bundles[idx + 1] if not is_last else None
+
+                    # -- Wait for background generation from previous iteration --
+                    if bg_task is not None:
+                        await bg_task
+                        bg_task = None
+
+                    # -- Check if background already produced results --
+                    if bundle.product_code in _background_generation:
+                        review_queue, db_changes, run_id = _background_generation.pop(bundle.product_code)
+                        log.info(
+                            f"Using pre-generated content for {bundle.product_code} "
+                            f"(run_id={run_id}, sections={len(review_queue)})"
+                        )
+                    else:
+                        # -- Full pipeline + generation (same as single-product) --
+                        run_id = f"run_{bundle.product_code}_{int(asyncio.get_running_loop().time())}"
+
                         await manager.broadcast({
-                            "type":   "AGENT_STATE",
-                            "run_id": run_id,
-                            "state":  state
+                            "type":         "IMPACT_DETECTED",
+                            "run_id":       run_id,
+                            "product_code": bundle.product_code,
+                            "change_count": bundle.get_change_count(),
+                            "queue_position": idx,
+                            "total_products": total,
                         })
 
-                    # --- Process the bundle ---
-                    plans = await asyncio.to_thread(pipeline.process_change_bundle, bundle)
+                        for state in ["POLLING", "INTERPRETING", "MAPPING", "GENERATING"]:
+                            await asyncio.sleep(1)
+                            await manager.broadcast({
+                                "type": "AGENT_STATE", "run_id": run_id, "state": state
+                            })
 
-                    if plans:
-                        approved_sections = []
-                        approved_contents = []   # GeneratedContent objects for deferred Neo4j injection
+                        plans = await asyncio.to_thread(pipeline.process_change_bundle, bundle)
+                        db_changes = serialize_db_changes(bundle)
 
-                        # ── STAGE A: Generate ALL content in parallel ──
+                        if plans:
+                            await manager.broadcast({
+                                "type": "AGENT_STATE", "run_id": run_id, "state": "GENERATING"
+                            })
+                            generated_results = await asyncio.gather(
+                                *[_safe_generate(p) for p in plans]
+                            )
+                            review_queue = [
+                                (plan, content)
+                                for plan, content in zip(plans, generated_results)
+                                if content is not None
+                            ]
+                        else:
+                            review_queue = []
+
+                    # -- Handle empty review queue --
+                    product_states[run_id] = "IN_REVIEW"
+
+                    if not review_queue:
+                        log.warning(f"No content generated for run {run_id}")
+                        product_states[run_id] = "REJECTED"
                         await manager.broadcast({
-                            "type": "AGENT_STATE", "run_id": run_id, "state": "GENERATING"
+                            "type": "WORKFLOW_ALL_REJECTED", "run_id": run_id,
                         })
+                        continue  # next bundle processes from scratch
 
-                        async def safe_generate(p):
-                            try:
-                                return await asyncio.to_thread(generator.generate_content, p)
-                            except Exception as e:
-                                log.error(f"Generation failed for {p.section_number}: {e}", exc_info=True)
-                                return None
+                    # -- STAGE B: Feed reviews one-at-a-time --
+                    approved_sections = []
+                    approved_contents = []
 
-                        generated_results = await asyncio.gather(
-                            *[safe_generate(p) for p in plans]
+                    for rev_idx, (plan, generated_content) in enumerate(review_queue, start=1):
+                        review_id = f"{run_id}_{plan.section_number}"
+
+                        plan_db_changes = get_relevant_changes(plan, db_changes)
+                        log.info(
+                            f"REVIEW_REQUIRED for {plan.section_number} | "
+                            f"db_changes count={len(plan_db_changes)}"
                         )
 
-                        # Pair plans with their generated content, skip failures
-                        review_queue = [
-                            (plan, content)
-                            for plan, content in zip(plans, generated_results)
-                            if content is not None
-                        ]
+                        global _active_review_payload
+                        _active_review_payload = {
+                            "type":           "REVIEW_REQUIRED",
+                            "run_id":         run_id,
+                            "review_id":      review_id,
+                            "section_number": plan.section_number,
+                            "title":          plan.title,
+                            "new_text":       generated_content.generated_text,
+                            "reasoning":      plan.pattern_reasoning,
+                            "db_changes":     plan_db_changes,
+                            "review_current": rev_idx,
+                            "review_total":   len(review_queue),
+                        }
+                        await manager.broadcast(_active_review_payload)
 
-                        if not review_queue:
-                            log.warning(f"All generations failed for run {run_id}")
-                            await manager.broadcast({
-                                "type": "WORKFLOW_ALL_REJECTED", "run_id": run_id,
-                            })
-                            continue  # skip to next bundle
+                        review_event = asyncio.Event()
+                        pending_reviews[review_id] = review_event
 
-                        # ── STAGE B: Feed reviews one-at-a-time ──
-                        # No injection here — just collect approved sections.
-                        for idx, (plan, generated_content) in enumerate(review_queue, start=1):
-                            review_id = f"{run_id}_{plan.section_number}"
-
-                            plan_db_changes = get_relevant_changes(plan, db_changes)
-                            log.info(
-                                f"REVIEW_REQUIRED for {plan.section_number} | "
-                                f"db_changes count={len(plan_db_changes)}"
-                            )
-
-                            await manager.broadcast({
-                                "type":           "REVIEW_REQUIRED",
-                                "run_id":         run_id,
-                                "review_id":      review_id,
-                                "section_number": plan.section_number,
-                                "title":          plan.title,
-                                "new_text":       generated_content.generated_text,
-                                "reasoning":      plan.pattern_reasoning,
-                                "db_changes":     plan_db_changes,
-                                "review_current": idx,
-                                "review_total":   len(review_queue),
-                            })
-
-                            # Wait for this specific review
-                            review_event = asyncio.Event()
-                            pending_reviews[review_id] = review_event
-
-                            try:
-                                await asyncio.wait_for(review_event.wait(), timeout=300.0)
-                            except asyncio.TimeoutError:
-                                log.warning(
-                                    f"Review timed out for {review_id}. Auto-rejecting."
-                                )
-                                review_decisions[review_id] = "REJECT"
-                                await manager.broadcast({
-                                    "type":    "PLAN_REJECTED",
-                                    "run_id":  run_id,
-                                    "section": plan.section_number,
-                                    "message": (
-                                        f"Review timed out after 5 minutes. "
-                                        f"Section {plan.section_number} auto-rejected."
-                                    )
-                                })
-                            finally:
-                                pending_reviews.pop(review_id, None)
-
-                            decision = review_decisions.pop(review_id, "REJECT")
-
-                            if decision == "APPROVE":
-                                generated_content.status = "APPROVED"
-
-                                approved_sections.append(SectionUpdate(
-                                    section=generated_content.section_number,
-                                    title=generated_content.section_title,
-                                    content=generated_content.generated_text,
-                                ))
-                                approved_contents.append(generated_content)
-
-                                await manager.broadcast({
-                                    "type":    "PLAN_APPROVED",
-                                    "run_id":  run_id,
-                                    "section": plan.section_number,
-                                    "message": f"Update for {plan.section_number} approved."
-                                })
-
-                                log.info(f"Override Granted for {plan.section_number}.")
-
-                            else:
-                                generated_content.status = "REJECTED"
-                                await manager.broadcast({
-                                    "type":    "PLAN_REJECTED",
-                                    "run_id":  run_id,
-                                    "section": plan.section_number,
-                                    "message": f"Update for {plan.section_number} was rejected by user."
-                                })
-
-                        # ── STAGE C: All reviews done ──
-
-                        if not approved_sections:
-                            log.info(f"All plans rejected for run {run_id}")
-                            await manager.broadcast({
-                                "type":   "WORKFLOW_ALL_REJECTED",
-                                "run_id": run_id,
-                            })
-                            continue  # skip to next bundle
-
-                        # ── STAGE D: Generate PDF (user sees this) ──
                         try:
+                            await asyncio.wait_for(review_event.wait(), timeout=300.0)
+                        except asyncio.TimeoutError:
+                            log.warning(f"Review timed out for {review_id}. Auto-rejecting.")
+                            review_decisions[review_id] = "REJECT"
                             await manager.broadcast({
-                                "type":   "AGENT_STATE",
-                                "run_id": run_id,
-                                "state":  "COMPILING_PDF"
+                                "type":    "PLAN_REJECTED",
+                                "run_id":  run_id,
+                                "section": plan.section_number,
+                                "message": (
+                                    f"Review timed out after 5 minutes. "
+                                    f"Section {plan.section_number} auto-rejected."
+                                )
+                            })
+                        finally:
+                            pending_reviews.pop(review_id, None)
+
+                        _active_review_payload = None
+                        decision = review_decisions.pop(review_id, "REJECT")
+
+                        if decision == "APPROVE":
+                            generated_content.status = "APPROVED"
+                            approved_sections.append(SectionUpdate(
+                                section=generated_content.section_number,
+                                title=generated_content.section_title,
+                                content=generated_content.generated_text,
+                            ))
+                            approved_contents.append(generated_content)
+                            await manager.broadcast({
+                                "type":    "PLAN_APPROVED",
+                                "run_id":  run_id,
+                                "section": plan.section_number,
+                                "message": f"Update for {plan.section_number} approved."
+                            })
+                            log.info(f"Override Granted for {plan.section_number}.")
+                        else:
+                            generated_content.status = "REJECTED"
+                            await manager.broadcast({
+                                "type":    "PLAN_REJECTED",
+                                "run_id":  run_id,
+                                "section": plan.section_number,
+                                "message": f"Update for {plan.section_number} was rejected by user."
                             })
 
-                            registry_entry = next(
-                                (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
-                                None
+                    # -- STAGE C: All reviews done --
+                    if not approved_sections:
+                        log.info(f"All plans rejected for run {run_id}")
+                        product_states[run_id] = "REJECTED"
+                        await manager.broadcast({
+                            "type": "WORKFLOW_ALL_REJECTED", "run_id": run_id,
+                        })
+                        continue  # next bundle processes from scratch
+
+                    # -- STAGE D: Generate PDF --
+                    try:
+                        await manager.broadcast({
+                            "type": "AGENT_STATE", "run_id": run_id, "state": "COMPILING_PDF"
+                        })
+
+                        registry_entry = next(
+                            (m for m in DOSSIER_REGISTRY if m.product_code == bundle.product_code),
+                            None
+                        )
+
+                        if registry_entry:
+                            manifest = EngineManifest.from_registry(registry_entry)
+                            pdf_path = await asyncio.to_thread(
+                                generate_updated_dossier, manifest, approved_sections
                             )
+                            log.info(f"PDF generated: {pdf_path}")
 
-                            if registry_entry:
-                                manifest = EngineManifest.from_registry(registry_entry)
-                                pdf_path = await asyncio.to_thread(
-                                    generate_updated_dossier,
-                                    manifest,
-                                    approved_sections
-                                )
+                            original_pdf_name = Path(manifest.pdf_path).name
+                            new_pdf_name      = pdf_path.name
 
-                                log.info(f"✅ PDF generated: {pdf_path}")
-
-                                original_pdf_name = Path(manifest.pdf_path).name
-                                new_pdf_name      = pdf_path.name
-
-                                await manager.broadcast({
-                                    "type":         "WORKFLOW_COMPLETE",
-                                    "run_id":       run_id,
-                                    "product_code": bundle.product_code,
-                                    "original_pdf": f"/dossiers/{original_pdf_name}",
-                                    "new_pdf":      f"/pdfs/{new_pdf_name}"
-                                })
-                            else:
-                                log.error(f"Product {bundle.product_code} not found in registry")
-                                await manager.broadcast({
-                                    "type":         "WORKFLOW_COMPLETE",
-                                    "run_id":       run_id,
-                                    "product_code": bundle.product_code,
-                                    "original_pdf": "",
-                                    "new_pdf":      ""
-                                })
-
-                        except Exception as e:
-                            log.error(f"PDF generation failed: {e}", exc_info=True)
+                            await manager.broadcast({
+                                "type":         "WORKFLOW_COMPLETE",
+                                "run_id":       run_id,
+                                "product_code": bundle.product_code,
+                                "original_pdf": f"/dossiers/{original_pdf_name}",
+                                "new_pdf":      f"/pdfs/{new_pdf_name}"
+                            })
+                        else:
+                            log.error(f"Product {bundle.product_code} not found in registry")
                             await manager.broadcast({
                                 "type":         "WORKFLOW_COMPLETE",
                                 "run_id":       run_id,
@@ -476,12 +553,43 @@ async def autonomous_agent_loop():
                                 "new_pdf":      ""
                             })
 
-                        # ── STAGE E: Silent Neo4j injection (background) ──
-                        # User is now on the final view examining PDFs.
-                        # Inject approved content to the graph silently — no UI updates.
-                        asyncio.create_task(
-                            _inject_all_sections(run_id, approved_contents, bundle.changes)
+                    except Exception as e:
+                        log.error(f"PDF generation failed: {e}", exc_info=True)
+                        await manager.broadcast({
+                            "type":         "WORKFLOW_COMPLETE",
+                            "run_id":       run_id,
+                            "product_code": bundle.product_code,
+                            "original_pdf": "",
+                            "new_pdf":      ""
+                        })
+
+                    # -- STAGE E: Silent Neo4j injection (background) --
+                    asyncio.create_task(
+                        _inject_all_sections(run_id, approved_contents, bundle.changes)
+                    )
+
+                    # -- STAGE F: Multi-product stagger --
+                    # Start next product's generation while user views this PDF,
+                    # then gate the for-loop until user clicks [Next Product].
+                    if total > 1 and next_bundle:
+                        product_states[run_id] = "COMPLETE_PENDING_ADVANCE"
+                        bg_task = asyncio.create_task(
+                            _generate_for_product(next_bundle, idx + 1, total)
                         )
+                        advance_event = asyncio.Event()
+                        foreground_gates[run_id] = advance_event
+                        await advance_event.wait()
+                        foreground_gates.pop(run_id, None)
+                        product_states[run_id] = "COMPLETE"
+
+                # -- Cleanup multi-product state --
+                if total > 1:
+                    if bg_task is not None:
+                        await bg_task
+                    await manager.broadcast({"type": "ALL_PRODUCTS_COMPLETE"})
+                    product_states.clear()
+                    foreground_gates.clear()
+                    _background_generation.clear()
 
             await asyncio.sleep(10)
 
@@ -500,18 +608,18 @@ async def startup_event():
     try:
         log.info("Connecting to SQL Server...")
         sql_client.connect()
-        log.info("✅ Connected to SQL Server")
+        log.info("Connected to SQL Server")
 
         log.info("Connecting to Neo4j...")
         neo4j_client.connect()
-        log.info("✅ Connected to Neo4j")
+        log.info("Connected to Neo4j")
 
         log.info("Starting autonomous agent background task...")
         asyncio.create_task(autonomous_agent_loop())
-        log.info("✅ Autonomous agent loop started")
+        log.info("Autonomous agent loop started")
 
     except Exception as e:
-        log.error(f"❌ Startup failed: {e}", exc_info=True)
+        log.error(f"Startup failed: {e}", exc_info=True)
         raise
 
 
@@ -519,9 +627,9 @@ async def startup_event():
 async def shutdown_event():
     log.info("Shutting down Cipher DSG API Server...")
     try:
-        sql_client.close()
+        sql_client.disconnect()
         neo4j_client.close()
-        log.info("✅ Connections closed")
+        log.info("Connections closed")
     except Exception as e:
         log.error(f"Error during shutdown: {e}")
 
@@ -535,6 +643,10 @@ async def websocket_endpoint(websocket: WebSocket):
     """The live stream connecting the UI to the AI brain."""
     await manager.connect(websocket)
     try:
+        # State hydration: if a review is pending, re-send it to the new client
+        if _active_review_payload is not None:
+            await websocket.send_json(_active_review_payload)
+            log.info(f"Hydrated new WS client with pending review: {_active_review_payload.get('review_id')}")
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

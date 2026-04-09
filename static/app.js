@@ -3,11 +3,21 @@
 let currentRunId       = null;
 let currentReviewId    = null;    // Per-section review ID for pipelined HITL
 let globalDossiers     = [];
-let logLines           = [];      // Now stores objects: { time, msg, colorClass }
-let reviewExpanded     = false;   // Right panel expand state
-let evidenceOpen       = true;    // Level 1: entire evidence block
+let logLines           = [];
+// Now stores objects: { time, msg, colorClass }
+let reviewExpanded     = false;
+// Right panel expand state
+let evidenceOpen       = true;
+// Level 1: entire evidence block
 let evidenceGroupStates = {};     // Level 2: per operation type { UPDATE: bool, INSERT: bool, ... }
-let currentViewName    = 'idle';  // Track the active view
+let currentViewName    = 'idle';
+// Track the active view
+
+// Multi-product state
+let multiProductMode   = false;
+let productQueue       = [];      // [{ run_id, product_code, product_name, state, queue_position }]
+let activeProductIndex = 0;
+let bufferedEvents     = {};      // run_id -> [event, ...] for non-active products
 
 const views = {
     idle:     document.getElementById('view-idle'),
@@ -15,11 +25,9 @@ const views = {
     review:   document.getElementById('view-review'),
     final:    document.getElementById('view-final')
 };
-
 const statusBadge = document.getElementById('status-badge');
 const coreDot     = document.getElementById('core-status-dot');
 const corePing    = document.getElementById('core-status-ping');
-
 
 // ============================================================
 // THEME TOGGLE
@@ -28,7 +36,7 @@ const corePing    = document.getElementById('core-status-ping');
 function initTheme() {
     const htmlElement = document.documentElement;
     const savedTheme = localStorage.getItem('cipher-theme');
-    
+
     if (savedTheme === 'light') {
         htmlElement.classList.remove('dark');
     } else {
@@ -41,7 +49,6 @@ function initTheme() {
 
 function toggleTheme() {
     const htmlElement = document.documentElement;
-    
     if (htmlElement.classList.contains('dark')) {
         // Switch to light
         htmlElement.classList.remove('dark');
@@ -58,15 +65,13 @@ function updateThemeIcon() {
     const sunIcon = document.getElementById('theme-icon-sun');
     const moonIcon = document.getElementById('theme-icon-moon');
     const isDark = document.documentElement.classList.contains('dark');
-    
+
     if (isDark) {
-        // In dark mode: show SUN icon to switch to LIGHT
         sunIcon?.classList.remove('hidden');
         sunIcon?.classList.add('block');
         moonIcon?.classList.add('hidden');
         moonIcon?.classList.remove('block');
     } else {
-        // In light mode: show MOON icon to switch to DARK
         sunIcon?.classList.add('hidden');
         sunIcon?.classList.remove('block');
         moonIcon?.classList.remove('hidden');
@@ -82,15 +87,48 @@ function updateThemeIcon() {
 const ICON_EXPAND = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="expand-icon"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><polyline points="21 3 14 10"/><polyline points="3 21 10 14"/></svg>`;
 const ICON_COMPRESS = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="expand-icon"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><polyline points="10 14 3 21"/><polyline points="14 10 21 3"/></svg>`;
 
+// ============================================================
+// WEBSOCKET WITH AUTO-RECONNECT
+// ============================================================
+
+let _wsReconnectDelay = 1000;
+
+function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/stream`);
+
+    ws.onopen = function() {
+        _wsReconnectDelay = 1000; // Reset backoff on successful connect
+        logToConsole("WebSocket connected to backend server", "text-emerald-400");
+    };
+
+    ws.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            handleAgentEvent(data, false);
+        } catch(e) {
+            console.error("Failed to parse WebSocket message:", e, event.data);
+        }
+    };
+
+    ws.onerror = function(error) {
+        console.error("WebSocket error:", error);
+    };
+
+    ws.onclose = function() {
+        logToConsole(`Connection lost. Reconnecting in ${Math.round(_wsReconnectDelay/1000)}s...`, "text-amber-400");
+        setTimeout(connectWebSocket, _wsReconnectDelay);
+        _wsReconnectDelay = Math.min(_wsReconnectDelay * 1.5, 10000); // Backoff up to 10s
+    };
+}
 
 // ============================================================
 // INITIALIZATION
 // ============================================================
 
 async function init() {
-    // Initialize theme from localStorage
     initTheme();
-    
+
     const expandBtn = document.getElementById('expand-btn');
     if (expandBtn) {
         expandBtn.innerHTML = ICON_EXPAND;
@@ -106,7 +144,6 @@ async function init() {
     `;
 
     try {
-        // Prevent caching on fetch
         const res = await fetch('/api/v1/dossiers', { cache: 'no-store' });
         if (!res.ok) throw new Error(`API returned status: ${res.status}`);
 
@@ -120,14 +157,14 @@ async function init() {
 
         globalDossiers.forEach(d => {
             grid.innerHTML += `
-                <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-6 rounded-xl hover:bg-slate-800/80 dark:hover:bg-slate-800/80 transition-all duration-300 border-l-2 border-emerald-500/50 dark:border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
+                <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-6 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-all duration-300 border-l-2 border-emerald-500/50 dark:border-emerald-500/50 flex flex-col justify-between h-40 group relative overflow-hidden">
                     <div class="absolute inset-0 bg-gradient-to-r from-emerald-500/5 dark:from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
                     <div class="relative z-10">
                         <div class="flex justify-between items-start mb-2">
                             <h3 class="font-bold text-slate-900 dark:text-white text-sm leading-tight group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">${d.name}</h3>
                             <svg class="w-5 h-5 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                         </div>
-                        <p class="text-[10px] font-mono text-slate-600 dark:text-slate-400">ID: ${d.product_code}</p>
+                        <p class="text-[10px] font-mono text-slate-500 dark:text-slate-400">ID: ${d.product_code}</p>
                     </div>
                     <div class="mt-4 flex items-center gap-2 relative z-10">
                         <span class="w-1.5 h-1.5 bg-emerald-500 dark:bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399]"></span>
@@ -137,30 +174,7 @@ async function init() {
             `;
         });
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/stream`);
-
-        ws.onopen = function() {
-            logToConsole("WebSocket connected to backend server", "text-emerald-400");
-        };
-
-        ws.onmessage = function(event) {
-            try {
-                const data = JSON.parse(event.data);
-                handleAgentEvent(data);
-            } catch(e) {
-                console.error("Failed to parse WebSocket message:", e, event.data);
-            }
-        };
-
-        ws.onerror = function(error) {
-            logToConsole("WebSocket error: Connection failed or lost", "text-rose-500");
-            console.error("WebSocket error:", error);
-        };
-
-        ws.onclose = function() {
-            logToConsole("WebSocket disconnected from server", "text-rose-400");
-        };
+        connectWebSocket();
 
     } catch (error) {
         console.error("Failed to load dossiers:", error);
@@ -183,11 +197,8 @@ function logToConsole(msg, colorClass = 'text-cyan-300') {
     const time = new Date().toLocaleTimeString('en-US', {
         hour12: false, hour: 'numeric', minute: 'numeric', second: 'numeric'
     });
-
-    // Push clean text directly to array
     logLines.push({ time, msg, colorClass });
-    
-    // Keep exactly 5 actual logs for the fade effect
+
     if (logLines.length > 5) {
         logLines.shift();
     }
@@ -198,12 +209,10 @@ function logToConsole(msg, colorClass = 'text-cyan-300') {
 function renderConsole() {
     const consoleOut = document.getElementById('console-output');
     if (!consoleOut) return;
-    
     let html = '';
 
-    // 1. Render Past/Current Logs (Fading up to 100%)
     const opacities = ['opacity-20', 'opacity-40', 'opacity-60', 'opacity-80', 'opacity-100'];
-    const offset = 5 - logLines.length; // Ensure the newest is always opacity-100
+    const offset = 5 - logLines.length;
 
     logLines.forEach((log, index) => {
         const op = opacities[index + offset];
@@ -216,11 +225,10 @@ function renderConsole() {
         `;
     });
 
-    // 2. Render Future Placeholders (Fading down)
     const futures = [
         { op: 'opacity-40', txt: '{ ... awaiting_telemetry }' },
         { op: 'opacity-20', txt: '{ ... pipeline_idle }' },
-        { op: 'opacity-5',  txt: '[✓] PDF generation stage' }
+        { op: 'opacity-5',  txt: '[+] PDF generation stage' }
     ];
 
     futures.forEach(f => {
@@ -238,48 +246,122 @@ function renderConsole() {
 
 
 // ============================================================
-// EVENT HANDLING
+// EVENT HANDLING & MULTI-PRODUCT ORCHESTRATION
 // ============================================================
 
-function handleAgentEvent(data) {
+function handleAgentEvent(data, bypassBuffer = false) {
+
+    // -- MULTI-PRODUCT SYSTEM EVENT ROUTING --
+
+    if (data.type === 'MULTI_PRODUCT_DETECTED') {
+        multiProductMode = true;
+        productQueue = data.product_codes.map((code, idx) => ({
+            run_id: null,
+            product_code: code,
+            product_name: (globalDossiers.find(d => d.product_code === code) || {}).name || code,
+            state: 'PENDING',
+            queue_position: idx,
+        }));
+        activeProductIndex = 0;
+        bufferedEvents = {};
+        renderProductIndicator();
+        logToConsole(`Multi-product batch: ${data.count} products detected.`, 'text-cyan-400');
+        return;
+    }
+
+    if (data.type === 'ALL_PRODUCTS_COMPLETE') {
+        logToConsole('All products processed.', 'text-emerald-400');
+        multiProductMode = false;
+        productQueue = [];
+        activeProductIndex = 0;
+        bufferedEvents = {};
+        hideProductIndicator();
+        return;
+    }
+
+    if (data.type === 'PRODUCT_READY') {
+        updateProductState(data);
+        renderProductIndicator();
+        return;
+    }
+
+    // Route by run_id in multi-product mode
+    if (multiProductMode && data.run_id) {
+        // Link run_id to product on first IMPACT_DETECTED
+        if (data.type === 'IMPACT_DETECTED') {
+            const match = productQueue.find(p => p.product_code === data.product_code);
+            if (match) match.run_id = data.run_id;
+        }
+
+        updateProductState(data);
+        renderProductIndicator();
+
+        const active = productQueue[activeProductIndex];
+
+        // Buffer events for non-active products silently
+        if (!bypassBuffer && active && data.run_id !== active.run_id) {
+            if (!bufferedEvents[data.run_id]) bufferedEvents[data.run_id] = [];
+            bufferedEvents[data.run_id].push(data);
+            return;
+        }
+    }
+
+    // -- STANDARD EVENT HANDLING --
 
     // --- IMPACT DETECTED ---
     if (data.type === 'IMPACT_DETECTED') {
         currentRunId = data.run_id;
-        
-        statusBadge.className = "font-mono px-4 py-1.5 bg-rose-500/10 text-rose-400 text-xs font-semibold rounded border border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all duration-300";
+
+        statusBadge.className = "font-mono px-4 py-1.5 bg-rose-500/10 text-rose-600 dark:text-rose-400 text-xs font-semibold rounded border border-rose-500/50 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all duration-300";
         statusBadge.innerText = "[ ALERT : DB_ANOMALY_DETECTED ]";
-        coreDot.className     = "relative w-3 h-3 bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
+        coreDot.className     = "relative w-3 h-3 bg-rose-500 dark:bg-rose-400 rounded-full shadow-[0_0_8px_#fb7185]";
         corePing.className    = "absolute w-full h-full bg-rose-500 rounded-full animate-ping opacity-30";
 
-        document.getElementById('wf-product').innerText = data.product_code;
+        const wfProduct = document.getElementById('wf-product');
+        if (wfProduct) wfProduct.innerText = data.product_code;
+
+        const targetDossierName = document.getElementById('target-dossier-name');
+        if (targetDossierName) targetDossierName.innerText = data.product_code;
+
         document.getElementById('wf-trigger').innerText = `${data.change_count} DB UPDATE(s)`;
-        
+
         logToConsole(`Threat radar triggered. Detected ${data.change_count} regulatory shifts.`, 'text-rose-400');
         logToConsole(`Executing pipeline extraction on product: '${data.product_code}'`, 'text-slate-400');
-        
+
         switchView('workflow');
     }
 
     // --- AGENT STATE ---
     if (data.type === 'AGENT_STATE') {
-        document.querySelectorAll('.step-indicator').forEach(el => {
-            el.classList.remove('text-cyan-400', 'text-glow', 'opacity-100');
-            el.classList.add('opacity-40');
-            el.querySelector('.indicator-ring')?.classList.remove('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
-            el.querySelector('.indicator-ring')?.classList.add('bg-slate-800', 'border-slate-600');
-        });
 
-        const activeStep = document.getElementById(`step-${data.state}`);
-        if (activeStep) {
-            activeStep.classList.remove('opacity-40');
-            activeStep.classList.add('text-cyan-400', 'text-glow', 'opacity-100');
-            const ring = activeStep.querySelector('.indicator-ring');
-            if (ring) {
-                ring.classList.remove('bg-slate-800', 'border-slate-600');
-                ring.classList.add('border-cyan-400', 'bg-cyan-500/20', 'shadow-[0_0_10px_rgba(6,182,212,0.5)]');
+        const stepsOrder = ['POLLING', 'INTERPRETING', 'MAPPING', 'GENERATING', 'COMPILING_PDF'];
+        const currentIndex = stepsOrder.indexOf(data.state);
+
+        stepsOrder.forEach((stepName, index) => {
+            const stepEl = document.getElementById(`step-${stepName}`);
+            if (!stepEl) return;
+
+            const ring = stepEl.querySelector('.indicator-ring');
+            const textEl = stepEl.querySelector('span');
+
+            stepEl.className = "flex items-center gap-4 step-indicator transition-all duration-500";
+            if (ring) ring.className = "w-4 h-4 rounded-full z-10 indicator-ring transition-all duration-300";
+            if (textEl) textEl.className = "font-mono text-xs tracking-wider transition-colors duration-300";
+
+            if (index < currentIndex) {
+                stepEl.classList.add('opacity-100');
+                if (textEl) textEl.classList.add('text-emerald-600', 'dark:text-emerald-400');
+                if (ring) ring.classList.add('bg-emerald-500', 'border-2', 'border-emerald-500', 'dark:border-emerald-400', 'shadow-[0_0_10px_rgba(16,185,129,0.4)]');
+            } else if (index === currentIndex) {
+                stepEl.classList.add('opacity-100', 'text-glow');
+                if (textEl) textEl.classList.add('text-cyan-600', 'dark:text-cyan-400', 'font-bold');
+                if (ring) ring.classList.add('bg-white', 'dark:bg-slate-900', 'border-2', 'border-cyan-500', 'dark:border-cyan-400', 'shadow-[0_0_15px_rgba(6,182,212,0.6)]', 'animate-pulse');
+            } else {
+                stepEl.classList.add('opacity-40');
+                if (textEl) textEl.classList.add('text-slate-500', 'dark:text-slate-400');
+                if (ring) ring.classList.add('bg-white', 'dark:bg-slate-800', 'border-2', 'border-slate-300', 'dark:border-slate-600');
             }
-        }
+        });
 
         const stateMessages = {
             POLLING:      'Scanning SQL change log for new events...',
@@ -288,14 +370,19 @@ function handleAgentEvent(data) {
             GENERATING:   'Generating updated section content via LLM...',
             COMPILING_PDF:'Compiling updated dossier PDF...',
         };
-        
+
         const msg = stateMessages[data.state] || `Protocol: ${data.state}...`;
         logToConsole(msg, 'text-cyan-300');
+
+        if (data.state === 'COMPILING_PDF' && currentViewName === 'review') {
+            switchView('workflow');
+        }
     }
 
     // --- REVIEW REQUIRED ---
     if (data.type === 'REVIEW_REQUIRED') {
-        _reviewSubmitting = false;  // Re-enable submit buttons for next review
+        _reviewSubmitting = false;
+
         const reviewNumber = data.review_current ? ` (${data.review_current}/${data.review_total})` : '';
         logToConsole(`Section ${data.section_number} queued — awaiting human authorization${reviewNumber}.`, 'text-amber-400');
         currentRunId    = data.run_id;
@@ -307,57 +394,49 @@ function handleAgentEvent(data) {
             expandBtn.title     = 'Expand panel';
         }
 
-        // Build section name with review badge
         const reviewBadge = (data.review_total > 1)
-            ? ` <span class="ml-3 inline-block px-2 py-0.5 bg-amber-500/20 border border-amber-500/50 rounded text-amber-400 text-xs font-mono">${data.review_current}/${data.review_total}</span>`
+            ? ` <span class="ml-3 inline-block px-2 py-0.5 bg-amber-500/10 dark:bg-amber-500/20 border border-amber-500/50 rounded text-amber-600 dark:text-amber-400 text-xs font-mono">${data.review_current}/${data.review_total}</span>`
             : '';
+
         document.getElementById('rev-section-name').innerHTML = `${data.section_number} — ${data.title}${reviewBadge}`;
         document.getElementById('rev-reasoning').innerText    = data.reasoning;
 
         renderDbEvidence(data.db_changes || []);
 
-        // --- Normalize bullet chars (• ●) into standard markdown list items ---
         const cleanedText = (data.new_text || '')
             .replace(/([^\n])[•●]\s*/g, '$1\n- ')
             .replace(/^\s*[•●]\s*/gm, '- ');
 
         document.getElementById('rev-new').innerHTML = marked.parse(cleanedText);
 
-        statusBadge.className = "font-mono px-4 py-1.5 bg-amber-500/10 text-amber-400 text-xs font-semibold rounded border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all duration-300";
+        statusBadge.className = "font-mono px-4 py-1.5 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-xs font-semibold rounded border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)] transition-all duration-300";
         statusBadge.innerText = "[ PAUSED : AWAITING_AUTHORIZATION ]";
-        coreDot.className     = "relative w-3 h-3 bg-amber-400 rounded-full shadow-[0_0_8px_#fbbf24]";
+        coreDot.className     = "relative w-3 h-3 bg-amber-500 dark:bg-amber-400 rounded-full shadow-[0_0_8px_#fbbf24]";
         corePing.className    = "absolute w-full h-full bg-amber-500 rounded-full animate-ping opacity-20";
 
         switchView('review');
     }
 
-    // --- PLAN APPROVED (per-section feedback) ---
+    // --- PLAN APPROVED ---
     if (data.type === 'PLAN_APPROVED') {
         logToConsole(`Approved: ${data.section} — ${data.message}`, 'text-emerald-400');
-        statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded border border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-300";
+        statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold rounded border border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-300";
         statusBadge.innerText = "[ APPROVED : SECTION_QUEUED ]";
     }
 
-    // --- PLAN REJECTED (per-section feedback) ---
+    // --- PLAN REJECTED ---
     if (data.type === 'PLAN_REJECTED') {
         logToConsole(`Rejected: ${data.section} — ${data.message}`, 'text-rose-400');
-    }
-
-    // --- WORKFLOW REJECTED ---
-    if (data.type === 'WORKFLOW_REJECTED') {
-        logToConsole(`Override Denied: ${data.message}`, 'text-rose-500 font-bold');
-        switchView('workflow');
     }
 
     // --- WORKFLOW COMPLETE ---
     if (data.type === 'WORKFLOW_COMPLETE') {
         _reviewSubmitting = false;
         logToConsole(`PDF compiled for ${data.product_code}. Download ready.`, 'text-cyan-400');
-        
-        // Show loading overlay before setting PDF sources
+
         const loadingOverlay = document.getElementById('pdf-loading-overlay');
         if (loadingOverlay) {
-            loadingOverlay.classList.remove('opacity-0');
+            loadingOverlay.classList.remove('opacity-0', 'pointer-events-none');
             loadingOverlay.classList.add('opacity-100');
         }
 
@@ -365,11 +444,10 @@ function handleAgentEvent(data) {
         const pdfNew = document.getElementById('pdf-new');
         const downloadBtn = document.getElementById('download-btn');
 
-        // Set up onload handlers to hide loading overlay
         const hideLoadingOverlay = () => {
             if (loadingOverlay && pdfOrig.src && pdfNew.src && pdfOrig.offsetHeight > 0 && pdfNew.offsetHeight > 0) {
                 setTimeout(() => {
-                    loadingOverlay.classList.add('opacity-0');
+                    loadingOverlay.classList.add('opacity-0', 'pointer-events-none');
                     loadingOverlay.classList.remove('opacity-100');
                 }, 300);
             }
@@ -378,38 +456,104 @@ function handleAgentEvent(data) {
         pdfOrig.onload = hideLoadingOverlay;
         pdfNew.onload = hideLoadingOverlay;
 
-        // Set PDF sources
         pdfOrig.src = data.original_pdf;
         pdfNew.src = data.new_pdf;
         downloadBtn.href = data.new_pdf;
-        
-        // Fallback timeout: hide loading overlay after 8 seconds even if PDFs don't load
+
         setTimeout(() => {
             if (loadingOverlay) {
-                loadingOverlay.classList.add('opacity-0');
+                loadingOverlay.classList.add('opacity-0', 'pointer-events-none');
                 loadingOverlay.classList.remove('opacity-100');
             }
         }, 8000);
-        
-        // Update status badge
-        statusBadge.className = "font-mono px-4 py-1.5 bg-cyan-500/10 text-cyan-400 text-xs font-semibold rounded border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all duration-300";
+
+        statusBadge.className = "font-mono px-4 py-1.5 bg-cyan-500/10 text-cyan-700 dark:text-cyan-400 text-xs font-semibold rounded border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)] transition-all duration-300";
         statusBadge.innerText = "[ SUCCESS : DOSSIER_COMPILED ]";
-        coreDot.className     = "relative w-3 h-3 bg-cyan-400 rounded-full shadow-[0_0_8px_#22d3ee]";
+        coreDot.className     = "relative w-3 h-3 bg-cyan-500 dark:bg-cyan-400 rounded-full shadow-[0_0_8px_#22d3ee]";
         corePing.className    = "absolute w-full h-full bg-cyan-500 rounded-full animate-ping opacity-20";
 
-        // Switch to final view (shows with loading animation)
         switchView('final');
+
+        // Multi-product: change [Home] button to [Next Product] if more products remain
+        if (multiProductMode) {
+            const homeBtn = document.querySelector('#view-final button[onclick="finishWorkflow()"]');
+            if (homeBtn) {
+                const remaining = productQueue.filter(p => !['COMPLETE', 'REJECTED'].includes(p.state));
+                homeBtn.innerText = remaining.length > 0 ? '[ Next Product ]' : '[ Home ]';
+            }
+        }
     }
 
     // --- WORKFLOW ALL REJECTED ---
     if (data.type === 'WORKFLOW_ALL_REJECTED') {
         _reviewSubmitting = false;
-        if (currentViewName === 'final') {
-            return; // Ignore if user is already viewing the final success screen
-        }
-
+        if (currentViewName === 'final') return;
         logToConsole(`All sections rejected. No changes committed.`, 'text-rose-400');
         triggerRejectionOverlay();
+    }
+}
+
+
+// ============================================================
+// CONTEXT SWITCHING FOR MULTI-PRODUCT
+// ============================================================
+
+function switchToProduct(index) {
+    if (index === -1 || index >= productQueue.length) return;
+
+    activeProductIndex = index;
+    const activeProduct = productQueue[index];
+
+    // Update header with new product context
+    const targetNameEl = document.getElementById('target-dossier-name');
+    if (targetNameEl) targetNameEl.innerText = activeProduct.product_name || activeProduct.product_code;
+
+    const wfProduct = document.getElementById('wf-product');
+    if (wfProduct) wfProduct.innerText = activeProduct.product_code;
+
+    logLines = [];
+    logToConsole(`Context Shift -> Focused on ${activeProduct.product_code}`, 'text-amber-400');
+    renderProductIndicator();
+
+    // Replay buffered events — calculate final state, render once (avoids animation flicker)
+    if (activeProduct.run_id && bufferedEvents[activeProduct.run_id]) {
+        const eventsToReplay = bufferedEvents[activeProduct.run_id];
+        bufferedEvents[activeProduct.run_id] = [];
+
+        // Determine the final view from buffered events without touching DOM
+        let targetView = 'workflow';
+        eventsToReplay.forEach(ev => {
+            updateProductState(ev);
+            if (ev.type === 'AGENT_STATE') {
+                logToConsole(`Fast-forward: ${ev.state}...`, 'text-slate-500');
+            }
+            if (ev.type === 'REVIEW_REQUIRED') targetView = 'review';
+            if (ev.type === 'WORKFLOW_COMPLETE') targetView = 'final';
+        });
+
+        // Only process the last meaningful event through the full DOM path
+        if (targetView === 'review') {
+            const lastReview = [...eventsToReplay].reverse().find(e => e.type === 'REVIEW_REQUIRED');
+            if (lastReview) {
+                handleAgentEvent(lastReview, true);
+            } else {
+                switchView('review');
+            }
+        } else if (targetView === 'final') {
+            const lastComplete = [...eventsToReplay].reverse().find(e => e.type === 'WORKFLOW_COMPLETE');
+            if (lastComplete) {
+                handleAgentEvent(lastComplete, true);
+            } else {
+                switchView('final');
+            }
+        } else {
+            // Still on workflow — apply last AGENT_STATE for step indicator
+            const lastState = [...eventsToReplay].reverse().find(e => e.type === 'AGENT_STATE');
+            if (lastState) handleAgentEvent(lastState, true);
+            else switchView('workflow');
+        }
+    } else {
+        switchView('workflow');
     }
 }
 
@@ -424,27 +568,26 @@ async function submitReview(decision) {
     if (_reviewSubmitting) return;
     _reviewSubmitting = true;
 
-    const res = await fetch('/api/v1/workflow/review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ review_id: currentReviewId, decision: decision })
-    });
+    try {
+        const res = await fetch('/api/v1/workflow/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ review_id: currentReviewId, decision: decision })
+        });
 
-    if (res.ok) {
-        resetReviewExpand();
-        if (decision === 'APPROVE') {
-            logToConsole(`Override Granted. Section queued for compilation.`, 'text-emerald-400 font-bold');
+        if (res.ok) {
+            resetReviewExpand();
+            if (decision === 'APPROVE') {
+                logToConsole(`Override Granted. Section queued for compilation.`, 'text-emerald-400 font-bold');
+            } else {
+                logToConsole(`Section rejected.`, 'text-rose-400');
+            }
         } else {
-            logToConsole(`Section rejected.`, 'text-rose-400');
+            logToConsole(`ERROR: Failed to submit API decision.`, 'text-rose-500');
+            _reviewSubmitting = false;
         }
-        // Do NOT call switchView here. Let WebSocket events drive transitions:
-        //   - REVIEW_REQUIRED  → stays on review, updates content in-place
-        //   - WORKFLOW_COMPLETE → switches to final
-        //   - WORKFLOW_ALL_REJECTED → rejection overlay → idle
-        // This eliminates the race where switchView('workflow') collides with
-        // an incoming switchView('review') from the next REVIEW_REQUIRED.
-    } else {
-        logToConsole(`ERROR: Failed to submit API decision.`, 'text-rose-500');
+    } catch (error) {
+        logToConsole(`NETWORK ERROR: Cannot reach server. Try again.`, 'text-rose-500');
         _reviewSubmitting = false;
     }
 }
@@ -462,7 +605,7 @@ function openDossierPreview(id) {
     const title            = document.getElementById('preview-title');
 
     grid.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
-    
+
     setTimeout(() => {
         grid.classList.add('hidden');
         grid.classList.remove('grid');
@@ -482,13 +625,13 @@ function openDossierPreview(id) {
         }
 
         const borderClass = isSelected
-            ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.2)] bg-slate-800/80'
-            : 'border-slate-500/30 opacity-60 hover:opacity-100 hover:bg-slate-800/50';
+            ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.2)] bg-slate-100 dark:bg-slate-800/80'
+            : 'border-slate-300 dark:border-slate-500/30 opacity-60 hover:opacity-100 hover:bg-slate-50 dark:hover:bg-slate-800/50';
 
         dock.innerHTML += `
             <div onclick="openDossierPreview('${d.product_code}')" class="cursor-pointer glass-panel p-4 rounded-xl transition-all duration-300 border-l-2 ${borderClass} flex flex-col gap-1 dossier-list-item">
                 <h3 class="font-bold text-slate-900 dark:text-white text-xs truncate">${d.name}</h3>
-                <p class="text-[10px] font-mono text-slate-700 dark:text-slate-400">ID: ${d.product_code}</p>
+                <p class="text-[10px] font-mono text-slate-500 dark:text-slate-400">ID: ${d.product_code}</p>
             </div>
         `;
     });
@@ -500,6 +643,7 @@ function closeDossierPreview() {
     const iframe           = document.getElementById('preview-iframe');
 
     previewContainer.classList.add('opacity-0', 'translate-y-4');
+
     setTimeout(() => {
         previewContainer.classList.add('hidden');
         iframe.src = '';
@@ -523,6 +667,7 @@ function toggleExpandReview() {
     const expandBtn      = document.getElementById('expand-btn');
 
     reviewExpanded = !reviewExpanded;
+
     if (reviewExpanded) {
         reasoningPanel.classList.add('review-panel-hidden');
         contentPanel.classList.add('review-panel-expand');
@@ -544,6 +689,7 @@ function resetReviewExpand() {
 
         reasoningPanel.classList.remove('review-panel-hidden');
         contentPanel.classList.remove('review-panel-expand');
+
         if (expandBtn) {
             expandBtn.innerHTML = ICON_EXPAND;
             expandBtn.title     = 'Expand panel';
@@ -578,6 +724,7 @@ function toggleEvidenceGroup(opType) {
     const chevron = document.getElementById(`evidence-group-chevron-${opType}`);
 
     if (!body) return;
+
     if (evidenceGroupStates[opType]) {
         body.classList.remove('evidence-block-hidden');
         if (chevron) chevron.style.transform = 'rotate(0deg)';
@@ -600,7 +747,7 @@ function renderDbEvidence(dbChanges) {
     if (chevron) chevron.style.transform = 'rotate(0deg)';
     container.innerHTML = '';
     container.classList.remove('evidence-block-hidden');
-    
+
     if (!dbChanges || dbChanges.length === 0) {
         if (countBadge) countBadge.textContent = '0';
         container.innerHTML = `<p class="text-[11px] font-mono text-slate-600 italic mt-2 px-1">No raw DB change records available.</p>`;
@@ -612,7 +759,7 @@ function renderDbEvidence(dbChanges) {
         const n = c.new_value !== null && c.new_value !== undefined ? String(c.new_value) : null;
         return o !== n;
     });
-    
+
     if (countBadge) countBadge.textContent = meaningful.length;
 
     if (meaningful.length === 0) {
@@ -627,20 +774,20 @@ function renderDbEvidence(dbChanges) {
         if (!groups[op]) groups[op] = [];
         groups[op].push(c);
     });
-    
+
     const sortedOps = Object.keys(groups).sort((a, b) => {
         const ai = ORDER.indexOf(a);
         const bi = ORDER.indexOf(b);
         return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
-    
+
     const opStyles = {
-        'INSERT': { header: 'bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/15', badge: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40', count: 'text-emerald-500/70' },
-        'UPDATE': { header: 'bg-amber-500/10 border-amber-500/20 hover:bg-amber-500/15', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/40', count: 'text-amber-500/70' },
-        'DELETE': { header: 'bg-rose-500/10 border-rose-500/20 hover:bg-rose-500/15', badge: 'bg-rose-500/20 text-rose-400 border-rose-500/40', count: 'text-rose-500/70' },
+        'INSERT': { header: 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20 hover:bg-emerald-100 dark:hover:bg-emerald-500/15', badge: 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border-emerald-300 dark:border-emerald-500/40', count: 'text-emerald-600 dark:text-emerald-500/70' },
+        'UPDATE': { header: 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 hover:bg-amber-100 dark:hover:bg-amber-500/15', badge: 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-500/40', count: 'text-amber-600 dark:text-amber-500/70' },
+        'DELETE': { header: 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/20 hover:bg-rose-100 dark:hover:bg-rose-500/15', badge: 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400 border-rose-300 dark:border-rose-500/40', count: 'text-rose-600 dark:text-rose-500/70' },
     };
-    const defaultStyle = { header: 'bg-slate-700/30 border-slate-600/20 hover:bg-slate-700/50', badge: 'bg-slate-500/20 text-slate-400 border-slate-500/40', count: 'text-slate-500/70' };
-    
+    const defaultStyle = { header: 'bg-slate-50 dark:bg-slate-700/30 border-slate-200 dark:border-slate-600/20 hover:bg-slate-100 dark:hover:bg-slate-700/50', badge: 'bg-slate-200 dark:bg-slate-500/20 text-slate-700 dark:text-slate-400 border-slate-300 dark:border-slate-500/40', count: 'text-slate-600 dark:text-slate-500/70' };
+
     function esc(str) {
         const d = document.createElement('div');
         d.textContent = str;
@@ -656,29 +803,29 @@ function renderDbEvidence(dbChanges) {
         let rowsHtml = '';
         records.forEach((change, ri) => {
             const ts = change.change_timestamp ? String(change.change_timestamp).split('T').pop().split('.')[0] : '—';
-            const oldDisplay = (change.old_value !== null && change.old_value !== undefined) ? `<span class="text-rose-300/80">${esc(String(change.old_value))}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
-            const newDisplay = (change.new_value !== null && change.new_value !== undefined) ? `<span class="text-emerald-300/90">${esc(String(change.new_value))}</span>` : `<span class="text-slate-600 italic">NULL</span>`;
-            const divider = ri > 0 ? `<div class="border-t border-white/5 mx-3"></div>` : '';
-            
+            const oldDisplay = (change.old_value !== null && change.old_value !== undefined) ? `<span class="text-rose-600 dark:text-rose-300/80 font-medium">${esc(String(change.old_value))}</span>` : `<span class="text-slate-400 dark:text-slate-600 italic">NULL</span>`;
+            const newDisplay = (change.new_value !== null && change.new_value !== undefined) ? `<span class="text-emerald-600 dark:text-emerald-300/90 font-medium">${esc(String(change.new_value))}</span>` : `<span class="text-slate-400 dark:text-slate-600 italic">NULL</span>`;
+            const divider = ri > 0 ? `<div class="border-t border-slate-200 dark:border-white/5 mx-3"></div>` : '';
+
             rowsHtml += `
                 ${divider}
                 <div class="px-3 py-2.5 flex flex-col gap-1.5">
-                    <div class="text-[10px] font-mono text-slate-400 tracking-wide mb-0.5">${esc(change.source_table || '')}</div>
+                    <div class="text-[10px] font-mono text-slate-500 dark:text-slate-400 tracking-wide mb-0.5">${esc(change.source_table || '')}</div>
                     <div class="flex items-start gap-2">
-                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">COLUMN</span>
-                        <span class="text-[11px] font-mono text-slate-300 break-all">${esc(change.column_name || '—')}</span>
+                        <span class="text-[10px] font-mono text-slate-400 dark:text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">COLUMN</span>
+                        <span class="text-[11px] font-mono text-slate-800 dark:text-slate-300 break-all">${esc(change.column_name || '—')}</span>
                     </div>
                     <div class="flex items-start gap-2">
-                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">OLD</span>
+                        <span class="text-[10px] font-mono text-slate-400 dark:text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">OLD</span>
                         <span class="text-[11px] font-mono break-all">${oldDisplay}</span>
                     </div>
                     <div class="flex items-start gap-2">
-                        <span class="text-[10px] font-mono text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">NEW</span>
+                        <span class="text-[10px] font-mono text-slate-400 dark:text-slate-600 uppercase tracking-widest w-14 flex-shrink-0 pt-px">NEW</span>
                         <span class="text-[11px] font-mono break-all">${newDisplay}</span>
                     </div>
                     <div class="flex items-center justify-between mt-0.5">
-                        <span class="text-[10px] font-mono text-slate-600">by&nbsp;${esc(change.changed_by || 'system')}</span>
-                        <span class="text-[10px] font-mono text-slate-600">${ts}</span>
+                        <span class="text-[10px] font-mono text-slate-500 dark:text-slate-600">by&nbsp;${esc(change.changed_by || 'system')}</span>
+                        <span class="text-[10px] font-mono text-slate-500 dark:text-slate-600">${ts}</span>
                     </div>
                 </div>
             `;
@@ -691,9 +838,9 @@ function renderDbEvidence(dbChanges) {
                         <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${style.badge} flex-shrink-0 uppercase tracking-wider">${opType}</span>
                         <span class="text-[10px] font-mono ${style.count}">(${records.length})</span>
                     </div>
-                    <svg id="evidence-group-chevron-${opType}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0 transition-transform duration-300" style="transform: rotate(0deg)"><polyline points="6 9 12 15 18 9"/></svg>
+                    <svg id="evidence-group-chevron-${opType}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="text-slate-500 dark:text-slate-400 flex-shrink-0 transition-transform duration-300" style="transform: rotate(0deg)"><polyline points="6 9 12 15 18 9"/></svg>
                 </div>
-                <div id="evidence-group-body-${opType}" class="evidence-group-body bg-slate-900/40">
+                <div id="evidence-group-body-${opType}" class="evidence-group-body bg-white dark:bg-slate-900/40">
                     ${rowsHtml}
                 </div>
             </div>
@@ -709,8 +856,6 @@ function renderDbEvidence(dbChanges) {
 let _switchViewTimer = null;
 
 function switchView(viewName) {
-    // Cancel any pending transition to prevent race conditions
-    // (e.g. submitReview → workflow vs REVIEW_REQUIRED → review colliding)
     if (_switchViewTimer) {
         clearTimeout(_switchViewTimer);
         _switchViewTimer = null;
@@ -719,16 +864,15 @@ function switchView(viewName) {
     currentViewName = viewName;
     if (viewName !== 'review') resetReviewExpand();
 
-    // Immediately hide all views
     Object.keys(views).forEach(key => {
         const el = views[key];
         el.classList.add('hidden', 'opacity-0', 'translate-y-4');
         el.classList.remove('translate-y-0');
     });
 
-    // Show target with a short fade-in
     const target = views[viewName];
     target.classList.remove('hidden');
+
     _switchViewTimer = setTimeout(() => {
         target.classList.remove('opacity-0', 'translate-y-4');
         target.classList.add('translate-y-0');
@@ -737,27 +881,48 @@ function switchView(viewName) {
 }
 
 function resetToIdle() {
-    statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-300";
+    statusBadge.className = "font-mono px-4 py-1.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold rounded border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-300";
     statusBadge.innerText = "[ SYS_IDLE : LISTENING_TELEMETRY ]";
-    coreDot.className     = "relative w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]";
+    coreDot.className     = "relative w-3 h-3 bg-emerald-500 dark:bg-emerald-400 rounded-full shadow-[0_0_8px_#34d399]";
     corePing.className    = "absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-20";
 
-    // Reset PDF sources and loading overlay for next workflow
     const pdfOrig = document.getElementById('pdf-orig');
     const pdfNew = document.getElementById('pdf-new');
     const loadingOverlay = document.getElementById('pdf-loading-overlay');
-    
+
     if (pdfOrig) pdfOrig.src = '';
     if (pdfNew) pdfNew.src = '';
+
     if (loadingOverlay) {
-        loadingOverlay.classList.remove('opacity-0');
+        loadingOverlay.classList.remove('opacity-0', 'pointer-events-none');
         loadingOverlay.classList.add('opacity-100');
     }
+
+    // Reset header
+    const targetNameEl = document.getElementById('target-dossier-name');
+    if (targetNameEl) targetNameEl.innerText = 'Listening...';
 
     switchView('idle');
 }
 
 function finishWorkflow() {
+    if (multiProductMode) {
+        const remaining = productQueue.filter(p => !['COMPLETE', 'REJECTED'].includes(p.state));
+        if (remaining.length > 0) {
+            logToConsole('Advancing to next product...', 'text-cyan-400');
+            // Tell backend to unblock the next product's review loop
+            fetch('/api/v1/workflow/advance', { method: 'POST' })
+                .catch(() => logToConsole('Error advancing workflow. Click [Next Product] again.', 'text-rose-500'));
+            // Switch UI to workflow view while waiting for next product's events
+            switchView('workflow');
+            // Advance active index to the next pending/processing product
+            const nextIdx = productQueue.findIndex((p, i) => i > activeProductIndex && !['COMPLETE', 'REJECTED'].includes(p.state));
+            if (nextIdx !== -1) {
+                switchToProduct(nextIdx);
+            }
+            return;
+        }
+    }
     logToConsole('Workflow complete. Returning to monitoring mode...', 'text-cyan-400');
     resetToIdle();
 }
@@ -765,9 +930,9 @@ function finishWorkflow() {
 function triggerRejectionOverlay() {
     const overlay   = document.getElementById('rejection-overlay');
     const textBlock = document.getElementById('rejection-overlay-text');
-    
+
     if (!overlay || !textBlock) {
-        resetToIdle();
+        if (!multiProductMode) resetToIdle();
         return;
     }
 
@@ -782,26 +947,79 @@ function triggerRejectionOverlay() {
             overlay.classList.add('overlay-entering');
         });
     });
-    
+
     setTimeout(() => {
         textBlock.classList.add('overlay-text-visible');
     }, 700);
-    
+
     setTimeout(() => {
-        resetToIdle();
+        // In multi-product mode, don't reset to idle — the next product's
+        // IMPACT_DETECTED event will drive the view transition.
+        if (!multiProductMode) resetToIdle();
     }, 2000);
-    
+
     setTimeout(() => {
         overlay.classList.remove('overlay-entering');
         overlay.classList.add('overlay-exiting');
     }, 2500);
-    
+
     setTimeout(() => {
         overlay.classList.add('hidden');
         overlay.classList.remove('flex', 'overlay-exiting');
         textBlock.classList.remove('overlay-text-visible');
         textBlock.style.opacity = '0';
     }, 3200);
+}
+
+// ============================================================
+// MULTI-PRODUCT HELPERS
+// ============================================================
+
+function updateProductState(data) {
+    const p = productQueue.find(p => p.run_id === data.run_id || p.product_code === data.product_code);
+    if (!p) return;
+    if (data.type === 'IMPACT_DETECTED')       p.state = 'PROCESSING';
+    if (data.type === 'PRODUCT_READY')         p.state = 'AWAITING_REVIEW';
+    if (data.type === 'REVIEW_REQUIRED')       p.state = 'IN_REVIEW';
+    if (data.type === 'WORKFLOW_COMPLETE')      p.state = 'COMPLETE';
+    if (data.type === 'WORKFLOW_ALL_REJECTED')  p.state = 'REJECTED';
+}
+
+function renderProductIndicator() {
+    const el = document.getElementById('product-indicator');
+    if (!el || !multiProductMode || productQueue.length === 0) {
+        if (el) el.classList.add('hidden');
+        return;
+    }
+    el.classList.remove('hidden');
+
+    const stateIcon = {
+        'PENDING':           '<span class="text-slate-500">&#x25CB;</span>',
+        'PROCESSING':        '<span class="text-cyan-400 animate-pulse">&#x25CF;</span>',
+        'AWAITING_REVIEW':   '<span class="text-amber-400">&#x25CF;</span>',
+        'IN_REVIEW':         '<span class="text-amber-400 animate-pulse">&#x25CF;</span>',
+        'COMPLETE':          '<span class="text-emerald-400">&#x2713;</span>',
+        'COMPLETE_PENDING_ADVANCE': '<span class="text-emerald-400">&#x2713;</span>',
+        'REJECTED':          '<span class="text-rose-400">&#x2717;</span>',
+    };
+
+    el.innerHTML = productQueue.map((p, idx) => {
+        const isActive = (idx === activeProductIndex);
+        const icon = stateIcon[p.state] || stateIcon['PENDING'];
+        const activeClass = isActive
+            ? 'bg-slate-800/80 border-cyan-500/50 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
+            : 'border-transparent opacity-60';
+        const nameClass = isActive ? 'text-white font-bold' : 'text-slate-400';
+        return `<div class="flex items-center gap-1.5 px-2.5 py-1 rounded border ${activeClass} transition-all duration-300">
+            ${icon}
+            <span class="tracking-wider uppercase text-[10px] ${nameClass} font-mono">${p.product_code}</span>
+        </div>`;
+    }).join('<span class="text-slate-600 text-[10px]">&#x25B8;</span>');
+}
+
+function hideProductIndicator() {
+    const el = document.getElementById('product-indicator');
+    if (el) el.classList.add('hidden');
 }
 
 // Start

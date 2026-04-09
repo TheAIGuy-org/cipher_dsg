@@ -13,206 +13,66 @@ body {
     transition: background-color 0.5s ease, color 0.5s ease;
 }
 
-/* === LIGHT THEME === */
+/* === LIGHT THEME (WARM ENTERPRISE) === */
 html:not(.dark) body {
-    background-color: #f8fafc;
+    background-color: #F8FAFC;
     background-image:
-        linear-gradient(to right, rgba(51, 65, 85, 0.08) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(51, 65, 85, 0.08) 1px, transparent 1px);
+        linear-gradient(to right, rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
     background-size: 40px 40px;
-    color: #1e293b;
-}
-
-.font-mono {
-    font-family: 'JetBrains Mono', monospace;
-}
-
-/* --- Glassmorphism Utilities --- */
-.glass-panel {
-    background: rgba(15, 23, 42, 0.6);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
-    transition: background 0.5s ease, border-color 0.5s ease;
-}
-
-html:not(.dark) .glass-panel {
-    background: rgba(248, 250, 252, 0.8);
-    border: 1px solid rgba(51, 65, 85, 0.1);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.08);
-}
-
-/* --- Animations & Glows --- */
-.glow-cyan {
-    box-shadow: 0 0 15px rgba(6, 182, 212, 0.5), inset 0 0 10px rgba(6, 182, 212, 0.2);
-    border-color: rgba(6, 182, 212, 0.5) !important;
-}
-
-.text-glow {
-    text-shadow: 0 0 10px currentColor;
-}
-
-.radar-sweep {
-    position: relative;
-    overflow: hidden;
-}
-.radar-sweep::after {
-    content: '';
-    position: absolute;
-    top: -50%;
-    left: -50%; width: 200%; height: 200%;
-    background: conic-gradient(transparent, rgba(16, 185, 129, 0.1), transparent 40deg);
-    animation: spin 4s linear infinite;
-}
-@keyframes spin { 100% { transform: rotate(360deg); } }
-
-/* --- Terminal Console Typing Effect --- */
-@keyframes fadeUp {
-    from { 
-        opacity: 0; 
-        transform: translateY(5px); 
-    }
-    to { 
-        opacity: 1; 
-        transform: translateY(0); 
-    }
-}
-
-/* --- Custom Scrollbars (Dark Theme) --- */
-::-webkit-scrollbar { 
-    width: 6px; 
-    height: 6px; 
-}
-::-webkit-scrollbar-track { 
-    background: rgba(15, 23, 42, 0.5);
-    border-radius: 4px; 
-}
-::-webkit-scrollbar-thumb { 
-    background: rgba(51, 65, 85, 0.8); 
-    border-radius: 4px;
-    transition: background 0.3s ease;
-}
-::-webkit-scrollbar-thumb:hover { 
-    background: rgba(71, 85, 105, 1);
-}
-
-/* --- Custom Scrollbars (Light Theme) --- */
-html:not(.dark) ::-webkit-scrollbar-track { 
-    background: rgba(248, 250, 252, 0.5);
-}
-html:not(.dark) ::-webkit-scrollbar-thumb { 
-    background: rgba(148, 163, 184, 0.6); 
-    border-radius: 4px;
-}
-html:not(.dark) ::-webkit-scrollbar-thumb:hover { 
-    background: rgba(100, 116, 139, 0.8);
-}
-
-/* Custom Scrollbar specifically for Dock & Panels */
-.custom-scrollbar::-webkit-scrollbar { 
-    width: 6px; 
-    height: 6px;
-} 
-.custom-scrollbar::-webkit-scrollbar-track { 
-    background: transparent; 
-}
-.custom-scrollbar::-webkit-scrollbar-thumb { 
-    background: rgba(51, 65, 85, 0.5); 
-    border-radius: 4px;
-    transition: background 0.3s ease;
-}
-
-html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb { 
-    background: rgba(148, 163, 184, 0.4); 
-}
-
-/* Smooth vertical scrolling for the console */
-#console-output {
-    scroll-behavior: smooth;
-}
-
-/* --- Review View Text Selection --- */
-#rev-new::selection        { background: rgba(16, 185, 129, 0.3); color: #6ee7b7; }
-#rev-section-name::selection { background: rgba(6, 182, 212, 0.3); color: #67e8f9; }
-#rev-reasoning::selection  { background: rgba(6, 182, 212, 0.2); color: #a5f3fc; }
-
-/* --- Markdown Body Styling --- */
-.markdown-body table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 1rem 0;
-    font-size: 0.875rem;
-}
-.markdown-body th, .markdown-body td {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 0.75rem;
-    text-align: left;
-}
-html:not(.dark) .markdown-body th, html:not(.dark) .markdown-body td {
-    border: 1px solid rgba(15, 23, 42, 0.15);
-}
-.markdown-body th {
-    background-color: rgba(255, 255, 255, 0.05);
-    font-weight: 600;
-    color: #e2e8f0;
-    transition: background-color 0.5s ease, color 0.5s ease;
-}
-html:not(.dark) .markdown-body th {
-    background-color: rgba(15, 23, 42, 0.08);
-    color: #1e293b;
-}
-.markdown-body tr:nth-child(even) {
-    background-color: rgba(255, 255, 255, 0.02);
-    transition: background-color 0.5s ease;
-}
-html:not(.dark) .markdown-body tr:nth-child(even) {
-    background-color: rgba(15, 23, 42, 0.02);
-}
-.markdown-body ul {
-    list-style-type: disc !important;
-    padding-left: 1.5rem !important;
-    margin: 1rem 0;
-}
-.markdown-body ol {
-    list-style-type: decimal !important;
-    padding-left: 1.5rem !important;
-    margin: 1rem 0;
-}
-.markdown-body li {
-    display: list-item !important;
-    margin-bottom: 0.35rem;
-}
-.markdown-body p {
-    margin-bottom: 1rem;
-}
-.markdown-body code {
-    background: rgba(255, 255, 255, 0.1);
-    padding: 0.2rem 0.4rem;
-    border-radius: 0.25rem;
-    font-family: 'JetBrains Mono', monospace;
-    transition: background-color 0.5s ease;
-}
-html:not(.dark) .markdown-body code {
-    background: rgba(15, 23, 42, 0.1);
+    color: #334155;
 }
 
 /* ============================================================
-   Review Panel Expand / Shrink Transition
+   Glassmorphism Panels
    ============================================================ */
+.glass-panel {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s ease;
+}
 
+html:not(.dark) .glass-panel {
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+}
+
+/* ============================================================
+   Typography & Glow Effects
+   ============================================================ */
+h1, h2, h3 {
+    letter-spacing: -0.02em;
+}
+
+.text-glow {
+    text-shadow: 0 0 15px currentColor;
+}
+
+html:not(.dark) .text-glow {
+    text-shadow: 0 0 10px rgba(6, 182, 212, 0.4);
+}
+
+/* ============================================================
+   Review Panel Expand/Collapse Animations
+   ============================================================ */
 .review-panel-transition {
-    transition: width 0.4s ease, opacity 0.4s ease, padding 0.4s ease;
+    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), 
+                opacity 0.3s ease, 
+                transform 0.4s ease;
 }
 
 .review-panel-hidden {
     width: 0 !important;
-    opacity: 0 !important;
-    padding: 0 !important;
-    overflow: hidden !important;
-    pointer-events: none !important;
-    border: none !important;
-    margin: 0 !important;
+    opacity: 0;
+    margin-right: -1rem; /* Collapse the gap */
+    pointer-events: none;
+    border: none;
+    transform: scaleX(0.95);
+    transform-origin: left;
 }
 
 .review-panel-expand {
@@ -220,133 +80,183 @@ html:not(.dark) .markdown-body code {
 }
 
 /* ============================================================
-   DB Evidence — Level 1 block collapse
+   Evidence Block Animations
    ============================================================ */
-
-#evidence-cards-container {
-    max-height: 2000px;
-    overflow: hidden;
-    transition: max-height 0.4s ease, opacity 0.35s ease;
+.evidence-group-body {
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+    max-height: 1000px;
     opacity: 1;
+    overflow: hidden;
 }
 
 .evidence-block-hidden {
     max-height: 0 !important;
     opacity: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    border-width: 0 !important;
+    overflow: hidden !important;
 }
 
 /* ============================================================
-   DB Evidence — Level 2 group body collapse
+   Custom Scrollbars
    ============================================================ */
-
-.evidence-group-body {
-    max-height: 1000px;
-    overflow: hidden;
-    transition: max-height 0.3s ease, opacity 0.25s ease;
-    opacity: 1;
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
 }
 
-.evidence-group-body.evidence-block-hidden {
-    max-height: 0 !important;
-    opacity: 0 !important;
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.2);
+    border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.4);
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.3);
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.6);
 }
 
 /* ============================================================
-   DB Evidence — Card hover polish
+   Markdown Body Styling (For Generated Content)
    ============================================================ */
+.markdown-body {
+    font-family: 'Inter', -apple-system, sans-serif;
+}
 
-.evidence-group {
-    transition: border-color 0.2s ease;
+.markdown-body p {
+    margin-bottom: 1em;
+    line-height: 1.6;
+}
+
+.markdown-body p:last-child {
+    margin-bottom: 0;
+}
+
+.markdown-body strong {
+    font-weight: 600;
+    color: #f8fafc;
+}
+
+html:not(.dark) .markdown-body strong {
+    color: #0f172a;
+}
+
+.markdown-body ul {
+    list-style-type: none;
+    padding-left: 1.2em;
+    margin-bottom: 1em;
+}
+
+.markdown-body ul li {
+    position: relative;
+    margin-bottom: 0.5em;
+    padding-left: 0.5em;
+}
+
+.markdown-body ul li::before {
+    content: "•";
+    position: absolute;
+    left: -1em;
+    color: #10b981; /* Emerald-500 */
+    font-weight: bold;
+}
+
+.markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1em;
+    font-size: 0.9em;
+}
+
+.markdown-body th {
+    text-align: left;
+    padding: 0.75em;
+    border-bottom: 2px solid rgba(148, 163, 184, 0.2);
+    color: #94a3b8;
+    font-weight: 600;
+}
+
+.markdown-body td {
+    padding: 0.75em;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+html:not(.dark) .markdown-body th {
+    color: #475569;
+    border-bottom: 2px solid rgba(148, 163, 184, 0.3);
+}
+
+html:not(.dark) .markdown-body td {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.markdown-body code {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(148, 163, 184, 0.1);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-size: 0.9em;
 }
 
 /* ============================================================
-   Expand / Compress button icon
+   Rejection Overlay Animations
    ============================================================ */
-
-#expand-btn:hover .expand-icon {
-    stroke: #34d399; /* emerald-400 */
-    transition: stroke 0.2s ease;
-}
-
-#expand-btn .expand-icon {
-    transition: stroke 0.2s ease;
-}
-
-/* ============================================================
-   REJECTION OVERLAY
-   ============================================================ */
-
-/* --- WHITE version (active) --- */
 #rejection-overlay {
-    background: #ffffff;
-}
-#rejection-main-text {
-    color: #475569; /* slate-600 */
+    background: rgba(2, 6, 23, 0.85);
+    backdrop-filter: blur(8px);
 }
 
-/* Overlay fade-in — entire background */
+html:not(.dark) #rejection-overlay {
+    background: rgba(255, 255, 255, 0.9);
+}
+
 @keyframes overlay-enter {
     from { opacity: 0; }
     to   { opacity: 1; }
 }
 
-/* Text fade-up — delayed so bg appears first */
 @keyframes overlay-text-enter {
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Overlay fade-out */
 @keyframes overlay-exit {
     from { opacity: 1; }
     to   { opacity: 0; }
 }
 
-.overlay-entering {
-    animation: overlay-enter 0.8s ease forwards;
-}
+.overlay-entering { animation: overlay-enter 0.6s ease forwards; }
+.overlay-text-visible { animation: overlay-text-enter 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+.overlay-exiting { animation: overlay-exit 0.5s ease forwards; }
 
-.overlay-text-visible {
-    animation: overlay-text-enter 0.5s ease forwards;
-}
-
-.overlay-exiting {
-    animation: overlay-exit 0.6s ease forwards;
-}
-
-/* Dossier List Styling */
+/* ============================================================
+   Dossier List Styling
+   ============================================================ */
 .dossier-list {
-    color: #1e293b; /* Dark text for light theme */
+    color: #e2e8f0;
     font-weight: 500;
     font-size: 1rem;
-    background-color: #ffffff; /* White background for light theme */
-    border: 1px solid rgba(0, 0, 0, 0.1);
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     padding: 10px;
     border-radius: 5px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 html:not(.dark) .dossier-list {
-    color: #1e293b; /* Ensure text is visible in light theme */
-    background-color: #f1f5f9; /* Light gray background for contrast */
-    border: 1px solid rgba(0, 0, 0, 0.2);
-}
-
-.dossier-list-item {
-    margin-bottom: 8px;
-    padding: 8px;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-html:not(.dark) .dossier-list-item {
-    border-bottom: 1px solid rgba(0, 0, 0, 0.2);
-}
-
-.dossier-list-item:hover {
-    background-color: rgba(0, 0, 0, 0.05);
-}
-
-html:not(.dark) .dossier-list-item:hover {
-    background-color: rgba(0, 0, 0, 0.1);
+    color: #1e293b;
+    border: 1px solid rgba(148, 163, 184, 0.2);
 }
