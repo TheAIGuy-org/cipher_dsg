@@ -15,6 +15,7 @@ Key Design Principles:
 import os
 import json
 import time
+import threading
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 
@@ -23,6 +24,119 @@ from pydantic import BaseModel
 from utils.logger import get_logger
 
 log = get_logger("llm.azure_client")
+
+
+class TokenTracker:
+    """
+    Thread-safe per-phase LLM token tracker.
+
+    Pipeline usage (sequential phases):
+        token_tracker.reset()
+        token_tracker.begin_phase("Phase 3: Concept Extraction")
+        # ... LLM calls auto-record here ...
+        token_tracker.begin_phase("Phase 4: Section Mapping")
+        # ...
+        token_tracker.print_summary()   # prints table + clears all phases
+
+    Parallel per-section usage (content generation):
+        token_tracker.begin_phase(f"Phase 9: {section_number}")
+        # ... LLM calls auto-record here ...
+        token_tracker.log_current_phase()  # prints + removes only this thread's phase
+    """
+
+    def __init__(self):
+        self._lock   = threading.Lock()
+        self._phases: list[dict] = []
+        self._tl     = threading.local()
+
+    def begin_phase(self, name: str):
+        """Set the active phase name for the calling thread."""
+        self._tl.phase = name
+
+    def record(self, prompt: int, completion: int, cached: int = 0, reasoning: int = 0):
+        """Accumulate token counts into the calling thread's active phase."""
+        phase = getattr(self._tl, "phase", "UNTRACKED")
+        with self._lock:
+            for p in self._phases:
+                if p["name"] == phase:
+                    p["input"]     += prompt
+                    p["output"]    += completion
+                    p["cached"]    += cached
+                    p["reasoning"] += reasoning
+                    p["calls"]     += 1
+                    return
+            self._phases.append({
+                "name": phase, "input": prompt, "output": completion,
+                "cached": cached, "reasoning": reasoning, "calls": 1,
+            })
+
+    def log_current_phase(self):
+        """Print and remove only the calling thread's phase — for parallel generators."""
+        phase = getattr(self._tl, "phase", None)
+        if not phase:
+            return
+        with self._lock:
+            entry = next((p for p in self._phases if p["name"] == phase), None)
+            if entry:
+                self._phases.remove(entry)
+        if entry:
+            self._log_phase_line(entry)
+
+    def reset(self):
+        """Clear all accumulated data (call at the start of each bundle)."""
+        with self._lock:
+            self._phases.clear()
+
+    def print_summary(self):
+        """Print all accumulated phases as a formatted table, then clear."""
+        with self._lock:
+            phases = list(self._phases)
+            self._phases.clear()
+        if not phases:
+            return
+        self._log_table(phases)
+
+    # ── private helpers ───────────────────────────────────────────────────────
+
+    def _log_phase_line(self, p: dict):
+        total  = p["input"] + p["output"]
+        hidden = []
+        if p["cached"]:    hidden.append(f"cached={p['cached']}")
+        if p["reasoning"]: hidden.append(f"reasoning={p['reasoning']}")
+        suffix = f"  [{', '.join(hidden)}]" if hidden else ""
+        log.info(
+            f"TOKENS | {p['name']:<42} | calls={p['calls']}  "
+            f"input={p['input']}  output={p['output']}  total={total}{suffix}"
+        )
+
+    def _log_table(self, phases: list[dict]):
+        W = 40
+        log.info("=" * 84)
+        log.info("  TOKEN USAGE PER PHASE")
+        log.info(f"  {'Phase':<{W}} {'Calls':>5}  {'Input':>8}  {'Output':>8}  {'Cached':>8}  {'Reason':>8}  {'Total':>8}")
+        log.info("  " + "-" * 82)
+        g_in = g_out = g_cached = g_reason = g_calls = 0
+        for p in phases:
+            total = p["input"] + p["output"]
+            log.info(
+                f"  {p['name']:<{W}} {p['calls']:>5}  {p['input']:>8}  {p['output']:>8}  "
+                f"{p['cached']:>8}  {p['reasoning']:>8}  {total:>8}"
+            )
+            g_in     += p["input"]
+            g_out    += p["output"]
+            g_cached += p["cached"]
+            g_reason += p["reasoning"]
+            g_calls  += p["calls"]
+        log.info("  " + "-" * 82)
+        grand = g_in + g_out
+        log.info(
+            f"  {'TOTAL':<{W}} {g_calls:>5}  {g_in:>8}  {g_out:>8}  "
+            f"{g_cached:>8}  {g_reason:>8}  {grand:>8}"
+        )
+        log.info("=" * 84)
+
+
+token_tracker = TokenTracker()
 
 
 @dataclass
@@ -45,6 +159,14 @@ class AzureLLMClient:
     - Response validation
     """
     
+    def _record_usage(self, usage) -> None:
+        """Extract input/output/hidden token counts from an API usage object and record them."""
+        prompt     = getattr(usage, "prompt_tokens",     0) or 0
+        completion = getattr(usage, "completion_tokens", 0) or 0
+        cached     = getattr(getattr(usage, "prompt_tokens_details",     None), "cached_tokens",    0) or 0
+        reasoning  = getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0) or 0
+        token_tracker.record(prompt, completion, cached, reasoning)
+
     def __init__(self):
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_KEY"),
@@ -114,10 +236,11 @@ class AzureLLMClient:
                     kwargs["response_format"] = {"type": "json_object"}
                 
                 response = self.client.chat.completions.create(**kwargs)
-                
+
                 latency_ms = (time.time() - start_time) * 1000
                 content = response.choices[0].message.content
-                
+                self._record_usage(response.usage)
+
                 # Parse JSON if requested
                 if response_format == "json_object":
                     try:
@@ -253,10 +376,11 @@ class AzureLLMClient:
                 )
                 
                 latency_ms = (time.time() - start_time) * 1000
-                
+
                 # Extract parsed model
                 parsed_output = response.choices[0].message.parsed
-                
+                self._record_usage(response.usage)
+
                 log.debug(
                     f"Structured LLM call successful: {response.usage.total_tokens} tokens, "
                     f"{latency_ms:.0f}ms, model={response_model.__name__}"

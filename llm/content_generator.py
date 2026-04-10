@@ -8,7 +8,7 @@ import re
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from parsers.models import SectionUpdatePlan, ConceptChangeOutput
-from llm.azure_client import AzureLLMClient
+from llm.azure_client import AzureLLMClient, token_tracker
 from graph.neo4j_client import client as neo4j_client
 from db.sql_client import get_sql_client
 from utils.logger import get_logger
@@ -76,8 +76,9 @@ class SectionContentGenerator:
         Returns:
             GeneratedContent with formatted text ready for approval
         """
+        token_tracker.begin_phase(f"Phase 9: {plan.section_number}")
         logger.info(f"Generating content for {plan.section_number}: {plan.title}")
-        
+
         # [NEW ARCHITECTURE] Execute Targeted DB View Context Pull
         sql_client = get_sql_client()
         target_context_array = []
@@ -132,7 +133,8 @@ class SectionContentGenerator:
         )
         
         logger.info(f"   ✅ Generated {len(generated_text)} chars (confidence: {content.generation_confidence:.2f})")
-        
+        token_tracker.log_current_phase()
+
         return content
     
     def _analyze_format(self, reference_text: str) -> dict:

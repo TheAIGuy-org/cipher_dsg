@@ -25,6 +25,7 @@ Usage:
   python main.py --parse-only     # Parse only, no Neo4j writes
 """
 import sys
+import time
 import argparse
 import traceback
 
@@ -37,6 +38,7 @@ from graph.neo4j_client import client
 from graph.neo4j_schema import build_schema, clear_all_data
 from graph.graph_loader import load_dossier
 from utils.logger import get_logger
+from llm.azure_client import token_tracker
 
 log = get_logger("main")
 
@@ -46,6 +48,9 @@ def build_dsg(clear: bool = False) -> None:
     log.info("=" * 70)
     log.info("  CIPHER DSG BUILDER — LLM-Powered Dynamic System (Phase 1)")
     log.info("=" * 70)
+
+    build_start = time.time()
+    token_tracker.reset()
 
     client.connect()
 
@@ -69,15 +74,23 @@ def build_dsg(clear: bool = False) -> None:
             log.info(f"\n📄 Processing: {manifest.product_name}")
             log.info(f"   PDF: {manifest.pdf_filename}")
 
+            dossier_start = time.time()
+            token_tracker.begin_phase(manifest.product_name)
+
             # Parse dossier with Phase 1 semantic profiling
             dossier = parse_dossier(manifest.pdf_path, manifest, profiler=profiler)
             
             if dossier:
                 # Load into Neo4j with full text templates + semantic profiles
                 load_dossier(dossier, client, skip_embeddings=False)
-                log.info(f"   ✅ Loaded {len(dossier.sections)} sections with semantic profiles")
+                elapsed = time.time() - dossier_start
+                log.info(f"   ✅ Loaded {len(dossier.sections)} sections with semantic profiles  [{elapsed:.1f}s]")
             else:
                 log.warning(f"   ⚠️  Failed to parse {manifest.product_name}")
+
+        total_elapsed = time.time() - build_start
+        log.info(f"\n⏱  Total build time: {total_elapsed:.1f}s  ({total_elapsed/60:.1f} min)")
+        token_tracker.print_summary()
 
         log.info("\n" + "=" * 70)
         log.info("✅ DSG BUILD COMPLETE (Phase 1)")

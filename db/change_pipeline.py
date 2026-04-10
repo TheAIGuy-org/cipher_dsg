@@ -19,6 +19,7 @@ from db.situation_analyzer import SectionSituationAnalyzer, get_situation_analyz
 from db.reference_finder import CrossDossierReferenceFinder, get_reference_finder
 from db.plan_builder import UpdatePlanBuilder, get_plan_builder
 from utils.logger import get_logger
+from llm.azure_client import token_tracker
 
 log = get_logger(__name__)
 
@@ -96,9 +97,12 @@ class ChangeDetectionPipeline:
         log.info("=" * 80)
         log.info(f"PROCESSING CHANGE BUNDLE: {product_code} ({change_count} changes)")
         log.info("=" * 80)
-        
+
+        token_tracker.reset()
+
         try:
             # PHASE 3: Concept Extraction
+            token_tracker.begin_phase("Phase 3: Concept Extraction")
             log.info("\n🔍 PHASE 3: Extracting Concepts...")
             concept_changes = self.concept_extractor.interpret_bundle(
                 bundle=change_bundle,
@@ -114,6 +118,7 @@ class ChangeDetectionPipeline:
                 log.info(f"     - {cc.concept}: {cc.change_type}")
             
             # PHASE 4: Section Mapping
+            token_tracker.begin_phase("Phase 4: Section Mapping")
             log.info("\n🎯 PHASE 4: Mapping to Sections...")
             
             # Collect impacted sections - handle both EXISTING and NEW sections differently
@@ -204,12 +209,13 @@ class ChangeDetectionPipeline:
                     primary_concept = new_sec['concepts'][0]
                     combined_rationale = " | ".join(new_sec['rationales'])
                     
+                    token_tracker.begin_phase("Phase 6: New Section Ref Finding")
                     reference_candidates = self.reference_finder.find_reference_section(
                         target_product_code=product_code,
                         concept=primary_concept.concept,
                         new_situation_description=combined_description
                     )
-                    
+
                     if reference_candidates:
                         # Step 1b: Use LLM to select the best reference from candidates
                         change_description = self.plan_builder._build_change_description(new_sec['concepts'])
@@ -222,11 +228,12 @@ class ChangeDetectionPipeline:
                         )
                     else:
                         reference_info = None
-                    
+
                     if reference_info:
                         log.info(f"    ✅ Found reference: {reference_info['product_code']} Section {reference_info['section_number']}")
-                        
+
                         # Step 2: Determine correct section number for TARGET product's hierarchy
+                        token_tracker.begin_phase("Phase 7: New Section Placement")
                         placement = self._determine_section_placement(
                             target_product_code=product_code,
                             reference_section_number=reference_info['section_number'],
@@ -298,6 +305,7 @@ class ChangeDetectionPipeline:
             
             # PHASE 5: Situation Analysis (only for existing sections)
             if impacted_sections_list:
+                token_tracker.begin_phase("Phase 5: Situation Analysis")
                 log.info("\n🧠 PHASE 5: Analyzing Situations for EXISTING sections...")
                 situation_analyses = self.situation_analyzer.analyze_situations(
                     impacted_sections=impacted_sections_list
@@ -314,6 +322,7 @@ class ChangeDetectionPipeline:
                         )
                     
                     # PHASE 6 & 7: Plan Building for existing sections
+                    token_tracker.begin_phase("Phase 6-7: Plan Building")
                     log.info("\n📋 PHASE 6-7: Building Update Plans for EXISTING sections...")
                     existing_plans = self.plan_builder.build_plans(
                         product_code=product_code,
@@ -392,7 +401,8 @@ class ChangeDetectionPipeline:
             log.info(f"  • {manual} require manual template")
             log.info(f"  • {new_sections} are NEW sections")
             log.info("=" * 80 + "\n")
-            
+
+            token_tracker.print_summary()
             return update_plans
             
         except Exception as e:
